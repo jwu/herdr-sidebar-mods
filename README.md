@@ -11,7 +11,7 @@ space, agent state icons in front of each row, and a quieter purple selection.
 | Mod | Replaces | What it adds |
 | --- | --- | --- |
 | `sidebar-spaces` | the shipped `spaces` mod | full-width machine headers with a CPU sparkline and a memory meter (drag one onto another to reorder the machines; ctrl-1..9 can follow that order), a branch ▸ remote tail per space, state icons, 2px row gaps |
-| `sidebar-agents` | the shipped `agents` mod | state icon first in every row, 2px row gaps, the same purple selection and 4px corners |
+| `sidebar-agents` | the shipped `agents` mod | two-line rows — folder, machine and that place's git tail on the first, then the program icon and title — state icon first in every row, 2px row gaps, the same purple selection and 4px corners |
 
 They are meant to be used together, but each works on its own.
 

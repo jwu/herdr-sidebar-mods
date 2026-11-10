@@ -24,7 +24,9 @@ the theme's yellow, and from 90% its red. A stale reading (the last sample
 failed) keeps its numbers gray instead.
 
 Below a machine band sit its space rows, each 30px tall (28px for a worktree),
-inset 20px from the left, right 8px, 4px corners, 1px of vertical air. A row
+20px in from the left and 8px from the right (the same right air the agent rows
+have), 4px corners, 1px of vertical air. The machine band itself keeps the full
+width. A row
 reads: a 14px state slot (a spinning ring while working, a red `!` badge when
 blocked, a hollow ring when idle, a green dot when done — empty when the space
 has no agent), a folder icon (branch icon for a worktree, indented another
@@ -37,18 +39,24 @@ with the branch name, `▸` and the remote it tracks (`dev ▸ origin`), and gre
 The Agents panel repeats the pattern: a header with `Agents` and a clock
 button that opens the sort menu, then sections (Pinned, then Needs you /
 Working / Done / Idle by priority, or grouped per space), each heading in its
-state color with a count. An agent row is 30px, 1px of vertical air, 4px
-corners, and leads with the same 14px state slot before the program icon, the
-agent name, its space or machine, a sub-agent fold count, and an age that
-becomes a pin button on hover. Sub-agent rows are 26px, indented under tree
-lines. The selected agent row is the same magenta at 20%.
+state color with a count. An agent row is two lines with 4px corners, its 14px
+state slot and its 20px program icon both centred between them; a click on the
+program icon folds that agent's sub-agents. The first line is the folder the
+agent's pane is in (its space when the pane has none), with the sub-agent fold
+count and an age that becomes a pin button on hover flush right. The second
+leads with a monitor icon for this computer or a server icon and the machine's
+name (`Local` here), then flush right that place's branch `▸` remote and
+`↑n`/`↓n`. The git tail is read with `git status --porcelain=v2 --branch` at
+most every 30s per folder, over `exec` on the agent's own machine. Sub-agent
+rows are 26px, indented under tree lines. The selected agent row is the same
+magenta at 20%.
 
 **How it behaves:** clicking a machine band folds or unfolds its spaces
 (remembered in `localStorage` under `machines.folded`); clicking `+` starts a
 space on that machine. Dragging a machine band onto another header moves that
 machine there — the band you carry fades, the one under the pointer shows a 2px
 accent line on the edge it will land against, and the order is remembered for
-this window only under `localStorage` `machines.order`. This computer drags like
+this window only under `localStorage` `machines.order`. `Local` drags like
 any other and leads only until it is dragged away; a machine added later lists
 after the ones you arranged, never above them. Herdr's `space.move` stays inside
 a machine's block and its `space.select` counts the daemon's order, so bind

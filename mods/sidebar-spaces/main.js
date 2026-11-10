@@ -519,7 +519,7 @@ export default class Spaces extends View {
       return layout === "loading" || (!layout && this.machines.some(k => k.name === m && k.state === "connected"))
         || spaces().some(s => (s.machine ?? null) === m && !this.shown.has(s.id));
     };
-    const loadingRow = m => h_flex().id(`machine-loading-${m ?? "local"}`).h(28).flex_none().ml(collapsed ? 0 : 20).my(1).px(collapsed ? 0 : 8).items_center().when(collapsed, el => el.justify_center()).text_size(12).text_color(t.dim).child(collapsed ? "…" : "Loading…");
+    const loadingRow = m => h_flex().id(`machine-loading-${m ?? "local"}`).h(28).flex_none().ml(collapsed ? 0 : 20).mr(collapsed ? 0 : 8).my(1).px(collapsed ? 0 : 8).items_center().when(collapsed, el => el.justify_center()).text_size(12).text_color(t.dim).child(collapsed ? "…" : "Loading…");
     const machineNames = this.arranged(this.machineNames());
     if (machineNames.length < 2) return loading(null) && !rows.length ? [loadingRow(null)] : rows.map(draw);
     return machineNames.flatMap((m) => {
@@ -538,7 +538,7 @@ export default class Spaces extends View {
       };
       const row1 = h_flex().gap(7).items_center()
         .child(icon)
-        .child(div().flex_1().truncate().child(m ?? "This computer"))
+        .child(div().flex_1().truncate().child(m ?? "Local"))
         .when(!connected && !rebuilt, el => el.child(div().flex_none().child((machine?.state ?? "asleep").replace(/_/g, " "))))
         .when(rebuilt, el => el.child(h_flex().flex_none().gap(3).items_center()
           .child(div().max_w(140).truncate().child(repair?.error || "rebuilt ·"))
@@ -582,7 +582,7 @@ export default class Spaces extends View {
         .on_mouse_up("left", (_e, cx) => release(cx));
       const head = collapsed
         ? drag(v_flex().id(`machine-${m ?? "local"}`).relative().flex_none().mt(4).w(RAIL_CELL).h(30).items_center().justify_center().rounded(4).bg(t.surface)
-          .tooltip(m ? `${m} · ${connected ? "connected" : (machine?.state ?? "asleep").replace(/_/g, " ")}` : "This computer")
+          .tooltip(m ? `${m} · ${connected ? "connected" : (machine?.state ?? "asleep").replace(/_/g, " ")}` : "Local")
           .cursor_pointer().hover(s => s.bg(t.hover))
           .when(this.machinePress?.m === m && carrying, (el) => el.opacity(0.5))
           .when(carrying && this.machineOver?.m === m, (el) => el.child(drop()))
@@ -594,10 +594,10 @@ export default class Spaces extends View {
           .when(carrying && this.machineOver?.m === m, (el) => el.child(drop()))
           .child(row1)
           .child(this.usage(m, t, connected)));
-      const empty = h_flex().id(`machine-new-${m ?? "local"}`).h(28).flex_none().ml(collapsed ? 0 : 20).my(1).px(collapsed ? 0 : 8).gap(7).items_center().rounded(4)
+      const empty = h_flex().id(`machine-new-${m ?? "local"}`).h(28).flex_none().ml(collapsed ? 0 : 20).mr(collapsed ? 0 : 8).my(1).px(collapsed ? 0 : 8).gap(7).items_center().rounded(4)
         .text_size(12).text_color(t.dim).hover(s => s.bg(t.hover).text_color(t.foreground))
         .on_click(() => run("space.new", { machine: m ?? "" }))
-        .when(collapsed, el => el.w(RAIL_CELL).rounded(4).justify_center().tooltip(`New space on ${m ?? "this computer"}`)
+        .when(collapsed, el => el.w(RAIL_CELL).rounded(4).justify_center().tooltip(`New space on ${m ?? "Local"}`)
           .child(h_flex().size(18).rounded(5).border_1().border_color(t.dim).items_center().justify_center()
             .child(svg("mods/workspace-chrome/plus.svg").size(10))))
         .when(!collapsed, el => el.child(svg("mods/workspace-chrome/plus.svg").size(12)).child("New space there"));
@@ -643,6 +643,7 @@ export default class Spaces extends View {
       .relative()
       .id(`space-${w.id}`)
       .ml(20)
+      .mr(8)
       .my(1)
       .px(8)
       .h(rowHeight({ tree }))

@@ -3,7 +3,7 @@
 
 import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { agents, terminals, panes, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout } from "herdr";
+import { agents, terminals, panes, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout, exec } from "herdr";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -68,6 +68,15 @@ function duration(ms) {
   return h < 24 ? `${h}h` : `${Math.floor(h / 24)}d`;
 }
 
+// The folder an agent works in, by its last path segment (a Windows path too).
+const base = (path) => (path ?? "").replace(/[\\/]+$/, "").split(/[\\/]/).pop();
+
+// A row's second line reads its place's git: branch, the remote it tracks,
+// ahead/behind. Asked at most this often per place; changes on this machine
+// wake it sooner only when the space list does the same.
+const GIT_EVERY = 30000;
+const gitKey = (on, cwd) => JSON.stringify([on ?? null, cwd]);
+
 // The agent's icon from the app's program table: a one-color glyph or a picture.
 function icon(p, size, color) {
   if (!p?.icon) return null;
@@ -83,7 +92,93 @@ export default class Agents extends View {
     this.pendingPins = JSON.parse(localStorage.getItem("pins") ?? "[]");
     if (!this.pendingPins.length) localStorage.removeItem("pins");
     this.migratingPins = new Set();
+    this.git = {}; // gitKey() -> { branch, upstream, ahead, behind }, null: no repo / detached
+    this.gitAt = {}; // gitKey() -> when it was last asked
+    this.gitBusy = false;
+    this.refreshGit(cx);
+    cx.timer.every(5000, (cx) => this.refreshGit(cx));
     cx.timer.every(30000, (cx) => cx.notify());
+  }
+
+  // Every place a listed agent works in: the machine it is on (null here) and
+  // the pane's live folder.
+  places() {
+    const cwdOf = new Map(panes().map((p) => [p.pane, p.cwd]));
+    const out = new Map();
+    for (const a of agents()) {
+      const cwd = cwdOf.get(a.pane);
+      if (!cwd) continue;
+      const on = a.address.includes("/") ? a.address.split("/")[0] : null;
+      out.set(gitKey(on, cwd), { on, cwd });
+    }
+    return [...out.entries()];
+  }
+
+  // One look at a time, each place once every GIT_EVERY. A machine that is away
+  // keeps what it showed and is asked again on the next pass.
+  refreshGit(cx) {
+    if (this.gitBusy) return;
+    const places = this.places();
+    // Agents that moved or ended leave nothing behind.
+    const live = new Set(places.map(([key]) => key));
+    for (const key of Object.keys(this.git)) {
+      if (live.has(key)) continue;
+      delete this.git[key];
+      delete this.gitAt[key];
+    }
+    const now = Date.now();
+    const due = places.filter(([key]) => !this.gitAt[key] || now - this.gitAt[key] >= GIT_EVERY);
+    if (!due.length) return;
+    this.gitBusy = true;
+    cx.spawn(async (cx) => {
+      for (const [key, { on, cwd }] of due) {
+        this.gitAt[key] = Date.now();
+        try {
+          // Writes nothing under .git, like the spaces panel's look.
+          const r = await exec("git", ["--no-optional-locks", "-c", "core.fsmonitor=false", "status", "--porcelain=v2", "--branch"], { cwd, on });
+          if (r.code !== 0) {
+            this.git[key] = null;
+            continue;
+          }
+          const info = { branch: null, upstream: null, ahead: 0, behind: 0 };
+          for (const line of r.stdout.split("\n")) {
+            if (line.startsWith("# branch.head ")) info.branch = line.slice(14);
+            else if (line.startsWith("# branch.upstream ")) info.upstream = line.slice(18);
+            else if (line.startsWith("# branch.ab ")) {
+              const [a, b] = line.slice(12).split(" ");
+              info.ahead = Math.abs(parseInt(a, 10)) || 0;
+              info.behind = Math.abs(parseInt(b, 10)) || 0;
+            }
+          }
+          this.git[key] = info.branch && info.branch !== "(detached)" ? info : null;
+        } catch {
+          // Couldn't ask (a machine away, a shell it hasn't): wait a round, not every 5s.
+          this.gitAt[key] = Date.now();
+        }
+      }
+      this.gitBusy = false;
+      cx.notify();
+    });
+  }
+
+  // A row's git tail, as the spaces panel draws one: branch, `▸` and the remote
+  // it tracks, then ahead and behind.
+  gitTail(g, t) {
+    const remote = g.upstream?.includes("/") ? g.upstream.slice(0, g.upstream.indexOf("/")) : "";
+    return h_flex()
+      .min_w(0)
+      .flex_none()
+      .gap(4)
+      .items_center()
+      .text_size(11)
+      .text_color(t.dim)
+      .child(svg("mods/workspace-chrome/git-branch.svg").size(10).flex_none().text_color(t.dim))
+      .child(div().min_w(0).truncate().child(g.branch))
+      .when(Boolean(remote), (el) => el
+        .child(div().flex_none().child("\u25b8"))
+        .child(div().min_w(0).truncate().child(remote)))
+      .when(g.ahead > 0, (el) => el.child(div().flex_none().text_color(t.ansi2).child(`\u2191${g.ahead}`)))
+      .when(g.behind > 0, (el) => el.child(div().flex_none().text_color(t.ansi1).child(`\u2193${g.behind}`)));
   }
 
   // Stamps agents whose state changed. Done and idle count as one: looking at a
@@ -282,11 +377,10 @@ export default class Agents extends View {
         .when(!open, (el) => el.child(String(subs.length)));
     };
 
-    // A row reads "space \u00b7 detail": the detail is a tab someone named or the
-    // agent's own title, never an automatic tab number unless two rows would
-    // otherwise read the same.
     // Read the pane snapshot once: every host read copies the whole list into JS.
-    const leads = leadPanes(panes());
+    const ps = panes();
+    const leads = leadPanes(ps);
+    const cwdOf = new Map(ps.map((p) => [p.pane, p.cwd]));
     const tabs = new Map(spaces().flatMap(s => s.tabs).map(tab => [tab.id, tab]));
     const labels = new Map(list.map(a => {
       const tab = tabs.get(a.tab);
@@ -294,16 +388,9 @@ export default class Agents extends View {
       return [a.address, tab ? title(many ? { ...tab, named: false } : tab, many ? a : leads.get(a.tab)) : (a.title || a.program?.name || "")];
     }));
     const label = (a) => labels.get(a.address);
-    const detail = new Map(list.map(a => [a.address, /^\d+$/.test(label(a)) ? null : label(a)]));
-    const seen = {};
-    for (const a of list) { const k = `${a.space_name}\u0000${detail.get(a.address) ?? ""}`; seen[k] = (seen[k] ?? 0) + 1; }
-    for (const a of list) {
-      if (detail.get(a.address) == null && seen[`${a.space_name}\u0000`] > 1) detail.set(a.address, label(a));
-    }
 
     const row = (a, i, subs = []) => {
-      const pic = icon(a.program, 16, t.foreground);
-      const more = detail.get(a.address);
+      const pic = icon(a.program, 20, t.foreground);
       // An agent on another machine (`vps/t7`) says which.
       const machine = a.address.includes("/") ? a.address.split("/")[0] : null;
       if (collapsed) {
@@ -339,19 +426,20 @@ export default class Agents extends View {
           cx.notify();
         })
         .child(svg(`mods/workspace-chrome/${isPinned ? "pin-off" : "pin"}.svg`).size(13));
-      // Under a space header the space goes without saying; an automatic tab number says nothing.
-      // Without a space header above (priority, pinned) the row names its space.
-      const full = byPriority || isPinned;
-      const name = full ? a.space_name || label(a) : more ?? (/^\d+$/.test(label(a)) ? a.program?.name || label(a) : label(a));
+      // The state and the program sit between the two lines, both centred on the
+      // whole row; the first line is the folder it works in, the second the
+      // machine it runs on.
+      const cwd = cwdOf.get(a.pane) ?? null;
+      const folder = (cwd && base(cwd)) || a.space_name || label(a);
+      const g = cwd ? this.git[gitKey(machine, cwd)] : null;
       return h_flex()
         .id(`ag-${a.address}`)
         .px(8)
-        .h(30)
-        .my(1)
+        .py(3)
         .flex_none()
-        .rounded(4)
+        .gap(8)
         .items_center()
-        .gap(9)
+        .rounded(4)
         .when(a.focused, (el) => el.bg(t.ansi5 + "33"))
         .cursor_pointer()
         .hover((s) => s.bg(t.hover))
@@ -361,20 +449,25 @@ export default class Agents extends View {
           cx.notify();
         })
         .on_click(() => run("pane.focus", { pane: a.pane }))
-        .child(div().w(14).flex_none().flex().justify_center().child(this.status(t, a, byPriority && !isPinned)))
-        .when(Boolean(pic), el => el.child(div().id(`agent-fold-${a.address}`)
-          .when(subs.length > 0, el => el.on_click((_e, cx) => {
+        .child(div().w(16).flex_none().flex().justify_center().child(this.status(t, a, true)))
+        .when(Boolean(pic), (el) => el.child(div().id(`agent-fold-${a.address}`).flex_none()
+          .when(subs.length > 0, (el) => el.on_click((_e, cx) => {
             cx.stop_propagation();
             this.folded.has(a.address) ? this.folded.delete(a.address) : this.folded.add(a.address);
             cx.notify();
           })).child(pic)))
-        .child(h_flex().flex_1().min_w(0).gap(5).items_center()
-          .child(div().min_w(0).max_w(full && more ? 120 : 200).truncate().text_color(idle ? t.muted : t.foreground).child(name))
-          .when(full && Boolean(more), el => el.child(div().flex_1().min_w(0).truncate().text_color(t.dim).child(`\u00b7 ${more}`))))
-        .when(Boolean(machine), el => el.child(div().text_size(10).text_color(t.dim).child(machine)))
-        .when(subs.length > 0, el => el.child(fold(a, subs)))
-        .when(this.hovered === a.address, el => el.child(pin))
-        .when(this.hovered !== a.address && Boolean(when), el => el.child(div().flex_none().text_size(11).text_color(t.dim).child(duration(now - when))));
+        .when(!pic, (el) => el.child(div().w(20).flex_none()))
+        .child(v_flex().flex_1().min_w(0).gap(1)
+          .child(h_flex().h(18).flex_none().gap(6).items_center()
+            .child(div().flex_1().min_w(0).truncate().text_color(idle ? t.muted : t.foreground).child(folder))
+            .when(subs.length > 0, (el) => el.child(fold(a, subs)))
+            .when(this.hovered === a.address, (el) => el.child(pin))
+            .when(this.hovered !== a.address && Boolean(when), (el) => el.child(div().flex_none().text_size(11).text_color(t.dim).child(duration(now - when)))))
+          .child(h_flex().h(16).flex_none().gap(6).items_center()
+            .child(h_flex().flex_1().min_w(0).gap(4).items_center().text_size(11).text_color(t.dim)
+              .child(svg(`mods/workspace-chrome/${machine ? "server" : "monitor"}.svg`).size(12).flex_none().text_color(t.dim))
+              .child(div().min_w(0).truncate().child(machine ?? "Local")))
+            .when(Boolean(g), (el) => el.child(div().flex_none().max_w(110).min_w(0).child(this.gitTail(g, t))))));
     };
 
     // Groups in list order: spaces (grouped) or priority sections. Agents of a
