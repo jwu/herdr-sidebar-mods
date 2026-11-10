@@ -5,7 +5,7 @@
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { spaces, machines, panes, run, openOverlay, exec, hc, theme, shared, setShared, watchFolder, window, layout } from "herdr";
+import { spaces, machines, panes, run, openOverlay, exec, hc, theme, shared, setShared, watchFolder, window, layout, nextCommand } from "herdr";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -110,6 +110,19 @@ export default class Spaces extends View {
     this.reconnecting = JSON.parse(localStorage.getItem("machines.reconnecting") ?? "{}");
     for (const state of Object.values(this.reconnecting)) state.busy = false;
     this.folded = new Set(JSON.parse(localStorage.getItem("machines.folded") ?? "[]"));
+    // The machine order the user dragged into place, by name (null is this one).
+    // Machines it never lists keep the catalog's order after the arranged ones.
+    this.order = JSON.parse(localStorage.getItem("machines.order") ?? "[]");
+    this.machinePress = null; // { m } while a header's press may become a reorder
+    this.machineOver = null; // { m } the header under the pointer
+    // "pick1".."pick9" from keys.json: the panel's own row numbering, which the
+    // machines dragged here can put out of step with `space.select`.
+    cx.spawn(async () => {
+      for (;;) {
+        const n = Number(String(await nextCommand()).replace(/^pick/, ""));
+        if (n >= 1 && n <= 9) this.pick(n);
+      }
+    });
     this.refreshMachines(cx);
     cx.timer.every(15000, cx => this.refreshMachines(cx));
     cx.timer.every(2000, cx => this.refreshStats(cx));
@@ -417,6 +430,9 @@ export default class Spaces extends View {
     const sp = spaces(), ps = panes();
     const ready = (w) => this.shown.has(w.id) || where(w, ps) in this.git || Date.now() - (this.born[w.id] ??= Date.now()) > 1500;
     for (const w of sp) if (!this.shown.has(w.id) && ready(w)) this.shown.add(w.id);
+    // Herdr's own order: this machine first, then machines by name. The panel
+    // regroups them in the order dragged here (see `displayed`); a space cannot
+    // move into another machine's block, so that order stays local to the mod.
     const list = sp.map((w, i) => ({ w, i, g: this.git[where(w, ps)] ?? null }));
     const mains = new Set(list.filter((r) => r.g && !r.g.linked).map((r) => r.g.repo));
     const nested = (r) => r.g?.linked && mains.has(r.g.repo);
@@ -452,19 +468,60 @@ export default class Spaces extends View {
     return out.filter(r => this.shown.has(r.w.id));
   }
 
+  // Every machine the panel lists: this computer, then the others as the
+  // catalog saves them.
+  machineNames() {
+    const remote = [...new Set([...spaces().map(s => s.machine).filter(Boolean), ...this.machines.map(m => m.name), ...Object.keys(this.reconnecting)])].sort();
+    return [null, ...remote];
+  }
+
+  // `names` in the user's order: the machines they arranged first, the rest as
+  // `names` lists them, so a machine saved later lands after the arranged ones
+  // instead of at the top. Sheprd's device order works the same way.
+  arranged(names) {
+    const rank = (m) => { const i = this.order.indexOf(m); return i < 0 ? this.order.length : i; };
+    return names.map((m, i) => ({ m, i })).sort((a, b) => rank(a.m) - rank(b.m) || a.i - b.i).map((x) => x.m);
+  }
+
+  // Drops machine `from` where `to` was, the way a space row follows another:
+  // dragged down it lands after `to`, dragged up before it. Remembers the whole
+  // visible order. This computer moves too: it leads only until it is dragged away.
+  moveMachine(from, to, names) {
+    const a = names.indexOf(from), b = names.indexOf(to);
+    if (a === -1 || b === -1 || a === b) return;
+    const next = names.filter((m) => m !== from);
+    next.splice(b, 0, from);
+    this.order = next;
+    localStorage.setItem("machines.order", JSON.stringify(next));
+  }
+
+  // The rows as the panel draws them: the machines in the order dragged here,
+  // each its own rows in Herdr's order. This is what ctrl-1..9 count.
+  displayed() {
+    const rows = this.ordered();
+    return this.arranged(this.machineNames()).flatMap((m) => rows.filter((r) => (r.w.machine ?? null) === m));
+  }
+
+  // Shows the space the panel lists at `n` (1-based). Herdr's own `space.select`
+  // counts the daemon's order instead, which a machine dragged here no longer
+  // matches, so keys.json sends ctrl-1..9 to `pick1`..`pick9`.
+  pick(n) {
+    const row = this.displayed()[n - 1];
+    if (row) run("space.select", { id: row.w.id });
+  }
+
   // The rows, under a header per machine once one isn't this computer.
   grouped(t, collapsed) {
     const rows = this.ordered();
     const draw = (r) => (collapsed ? this.compact(r, t) : this.row(r, t));
-    const remote = [...new Set([...rows.map(r => r.w.machine).filter(Boolean), ...this.machines.map(m => m.name), ...Object.keys(this.reconnecting)])].sort();
     const loading = m => {
       const layout = machines().find(k => k.name === m)?.layout;
       return layout === "loading" || (!layout && this.machines.some(k => k.name === m && k.state === "connected"))
         || spaces().some(s => (s.machine ?? null) === m && !this.shown.has(s.id));
     };
     const loadingRow = m => h_flex().id(`machine-loading-${m ?? "local"}`).h(28).flex_none().ml(collapsed ? 0 : 20).my(1).px(collapsed ? 0 : 8).items_center().when(collapsed, el => el.justify_center()).text_size(12).text_color(t.dim).child(collapsed ? "…" : "Loading…");
-    if (!remote.length) return loading(null) && !rows.length ? [loadingRow(null)] : rows.map(draw);
-    const machineNames = [null, ...remote];
+    const machineNames = this.arranged(this.machineNames());
+    if (machineNames.length < 2) return loading(null) && !rows.length ? [loadingRow(null)] : rows.map(draw);
     return machineNames.flatMap((m) => {
       const mine = rows.filter((r) => (r.w.machine ?? null) === m);
       const repair = this.reconnecting[m];
@@ -488,24 +545,55 @@ export default class Spaces extends View {
           .child(div().id(`machine-connect-${m}`).text_color(repair?.error ? t.blocked : t.muted)
             .hover(s => s.text_color(t.foreground))
             .tooltip(repair?.error || "This machine was rebuilt or replaced. Click to connect to the new one.")
+            .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
             .on_click((_e, cx) => { cx.stop_propagation(); this.reconnect(machine, cx); })
             .child(repair?.busy ? "Connecting…" : "Connect"))))
         .when(connected, el => el.child(div().id(`machine-add-${m ?? "local"}`).flex_none().px(4).rounded(4).hover(s => s.bg(t.hover).text_color(t.foreground))
+          .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
           .on_click((_e, cx) => { cx.stop_propagation(); run("space.new", { machine: m ?? "" }); }).child("+")))
         .child(div().size(6).rounded(3).flex_none().bg(connected ? t.ansi2 : t.muted))
         .child(svg(`mods/workspace-chrome/chevron-${folded ? "right" : "down"}.svg`).size(11).flex_none());
+      // A press that travels to another header reorders the machines; a press
+      // that stays on its own folds it. The carried header fades, and the
+      // header under the pointer shows the gap it would land in.
+      const from = machineNames.indexOf(this.machinePress?.m);
+      const carrying = from !== -1 && this.machineOver?.m !== this.machinePress?.m;
+      const drop = () => div().absolute().left(0).right(0).h(2).bg(t.accent)
+        .when(from < machineNames.indexOf(m), (el) => el.bottom(0))
+        .when(from > machineNames.indexOf(m), (el) => el.top(0));
+      const press = () => { this.machinePress = { m }; this.machineOver = { m }; };
+      const over = (cx) => {
+        if (this.machinePress && this.machineOver?.m !== m) {
+          this.machineOver = { m };
+          cx.notify();
+        }
+      };
+      const release = (cx) => {
+        const start = this.machinePress, onto = this.machineOver;
+        this.machinePress = null;
+        this.machineOver = null;
+        if (start && onto && onto.m !== start.m) this.moveMachine(start.m, onto.m, machineNames);
+        else if (start) toggle(cx);
+        cx.notify();
+      };
+      const drag = (el) => el
+        .on_mouse_down("left", press)
+        .on_mouse_move((_e, cx) => over(cx))
+        .on_mouse_up("left", (_e, cx) => release(cx));
       const head = collapsed
-        ? v_flex().id(`machine-${m ?? "local"}`).flex_none().mt(4).w(RAIL_CELL).h(30).items_center().justify_center().rounded(4).bg(t.surface)
+        ? drag(v_flex().id(`machine-${m ?? "local"}`).relative().flex_none().mt(4).w(RAIL_CELL).h(30).items_center().justify_center().rounded(4).bg(t.surface)
           .tooltip(m ? `${m} · ${connected ? "connected" : (machine?.state ?? "asleep").replace(/_/g, " ")}` : "This computer")
           .cursor_pointer().hover(s => s.bg(t.hover))
-          .on_click((_e, cx) => toggle(cx))
-          .child(div().relative().flex_none().child(icon).when(Boolean(m), el => el.child(badge)))
-        : v_flex().id(`machine-${m ?? "local"}`).flex_none().mt(4).mb(1).pl(collapsed ? 0 : 18).pr(collapsed ? 0 : 10).pt(5).pb(6).bg(t.surface)
+          .when(this.machinePress?.m === m && carrying, (el) => el.opacity(0.5))
+          .when(carrying && this.machineOver?.m === m, (el) => el.child(drop()))
+          .child(div().relative().flex_none().child(icon).when(Boolean(m), el => el.child(badge))))
+        : drag(v_flex().id(`machine-${m ?? "local"}`).relative().flex_none().mt(4).mb(1).pl(collapsed ? 0 : 18).pr(collapsed ? 0 : 10).pt(5).pb(6).bg(t.surface)
           .text_size(13.5).font_medium().text_color(connected ? t.foreground : t.muted)
           .cursor_pointer().hover(s => s.bg(t.hover))
-          .on_click((_e, cx) => toggle(cx))
+          .when(this.machinePress?.m === m && carrying, (el) => el.opacity(0.5))
+          .when(carrying && this.machineOver?.m === m, (el) => el.child(drop()))
           .child(row1)
-          .child(this.usage(m, t, connected));
+          .child(this.usage(m, t, connected)));
       const empty = h_flex().id(`machine-new-${m ?? "local"}`).h(28).flex_none().ml(collapsed ? 0 : 20).my(1).px(collapsed ? 0 : 8).gap(7).items_center().rounded(4)
         .text_size(12).text_color(t.dim).hover(s => s.bg(t.hover).text_color(t.foreground))
         .on_click(() => run("space.new", { machine: m ?? "" }))
@@ -643,7 +731,7 @@ export default class Spaces extends View {
         .child(div().id("space-new").size(26).flex_none().flex().items_center().justify_center().rounded(6).hover(s => s.bg(t.hover).text_color(t.foreground))
           .on_click(() => run("space.new")).child(svg("mods/workspace-chrome/plus.svg").size(14))))
       .child(v_flex().flex_1().min_h(0).pb(14).overflow_y_scrollbar().mode("always")
-        .on_mouse_up("left", (_e, cx) => { this.pressed = null; cx.notify(); })
+        .on_mouse_up("left", (_e, cx) => { this.pressed = null; this.machinePress = null; this.machineOver = null; cx.notify(); })
         .children(this.grouped(t, collapsed)));
   }
 }

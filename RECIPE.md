@@ -45,7 +45,16 @@ lines. The selected agent row is the same magenta at 20%.
 
 **How it behaves:** clicking a machine band folds or unfolds its spaces
 (remembered in `localStorage` under `machines.folded`); clicking `+` starts a
-space on that machine. A row click selects the space or focuses the agent; a
+space on that machine. Dragging a machine band onto another header moves that
+machine there — the band you carry fades, the one under the pointer shows a 2px
+accent line on the edge it will land against, and the order is remembered for
+this window only under `localStorage` `machines.order`. This computer drags like
+any other and leads only until it is dragged away; a machine added later lists
+after the ones you arranged, never above them. Herdr's `space.move` stays inside
+a machine's block and its `space.select` counts the daemon's order, so bind
+`ctrl-1..9` to `sidebar-spaces.pick1`..`pick9` in `keys.json` to have them count
+the rows the panel draws instead (see the README). A row click selects the space or
+focuses the agent; a
 right-click on a space opens the shipped space menu. Dragging a space row up or
 down shows a 2px accent line where it will land and moves it with
 `space.move`; worktrees reorder inside their main checkout's group only.
@@ -101,6 +110,8 @@ with two lines (name, then `CPU ▁▂▃ 12%  MEM ━━─ 61%`), a space row 
 state icon, folder, name and a purple `dev ▸ origin` tail, and an agent row
 whose state icon precedes the program icon; CPU and memory numbers appear
 within ten seconds and their bars move with load; clicking a machine band folds
-its rows; `+` starts a space; dragging a space row shows the accent line and
+its rows; dragging a machine band onto another header reorders the machines and
+survives a reload; `herdr-app do sidebar-spaces.pick5` shows the fifth row the
+panel draws, and ctrl-5 does the same once `keys.json` binds it; `+` starts a space; dragging a space row shows the accent line and
 moves it; narrowing the sidebar below 260px swaps the sparkline and meter for
 gauges, and below 200px leaves numbers only.

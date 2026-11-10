@@ -10,7 +10,7 @@ space, agent state icons in front of each row, and a quieter purple selection.
 
 | Mod | Replaces | What it adds |
 | --- | --- | --- |
-| `sidebar-spaces` | the shipped `spaces` mod | full-width machine headers with a CPU sparkline and a memory meter, a branch ▸ remote tail per space, state icons, 2px row gaps |
+| `sidebar-spaces` | the shipped `spaces` mod | full-width machine headers with a CPU sparkline and a memory meter (drag one onto another to reorder the machines; ctrl-1..9 can follow that order), a branch ▸ remote tail per space, state icons, 2px row gaps |
 | `sidebar-agents` | the shipped `agents` mod | state icon first in every row, 2px row gaps, the same purple selection and 4px corners |
 
 They are meant to be used together, but each works on its own.
@@ -30,6 +30,33 @@ herdr-app do layout.clone '{"name":"main","as":"sidebar"}'
 
 The shipped `spaces`/`agents` mods are rewritten by Herdr on every start, so
 these live under their own names instead of editing the shipped files.
+
+### ctrl-1..9 numbers the rows the panel shows
+
+Herdr's own `space.select` counts the daemon's order (this machine first, then
+machines by name), and `space.move` stays inside a machine's block. A machine
+dragged in the panel therefore cannot renumber it. The mod answers
+`sidebar-spaces.pick1`..`pick9` instead, counting the rows as drawn. Point the
+keys at it in `~/.config/herdr-app/keys.json`, under the layout that shows the
+panel (`layout:<name>` beats `global`; every other layout keeps the shipped
+behaviour):
+
+```json
+"layout:sidebar": {
+  "ctrl-1": "sidebar-spaces.pick1",
+  "ctrl-2": "sidebar-spaces.pick2",
+  "ctrl-3": "sidebar-spaces.pick3",
+  "ctrl-4": "sidebar-spaces.pick4",
+  "ctrl-5": "sidebar-spaces.pick5",
+  "ctrl-6": "sidebar-spaces.pick6",
+  "ctrl-7": "sidebar-spaces.pick7",
+  "ctrl-8": "sidebar-spaces.pick8",
+  "ctrl-9": "sidebar-spaces.pick9"
+}
+```
+
+`herdr-app check` and `herdr-app do sidebar-spaces.pick5` work without it; the
+binding only changes what a keypress reaches.
 
 ## Requirements
 
