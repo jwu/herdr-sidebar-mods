@@ -488,6 +488,7 @@ export default class Agents extends View {
         .id(`ag-${a.address}`)
         .px(8)
         .py(3)
+        .my(1)
         .flex_none()
         .gap(8)
         .items_center()
