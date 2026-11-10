@@ -60,9 +60,9 @@ Under a space row, when any of its terminals is listening, sits its ports line:
 18px tall, 10.5px type in the theme's blue, indented to where the space's
 name starts: each `:3000` is a listening port one of that space's own
 terminals started, with a dim `|` between them, and clicking it opens `http://localhost:PORT/`. A port on another
-machine copies `localhost:PORT` to the clipboard instead, since there is no
-tunnel from this window; its tooltip says so, and gives the socket's address
-(`*:3000`, `127.0.0.1:3000`).
+machine copies `IP:PORT` to the clipboard instead, since there is no tunnel from
+this window: the IP is that machine's ssh target host (`jwu@192.168.3.81` gives
+`192.168.3.81`), and the tooltip reads `192.168.3.81:3000 · click to copy`.
 
 **How it behaves:** clicking a machine band folds or unfolds its spaces
 (remembered in `localStorage` under `machines.folded`); clicking `+` starts a

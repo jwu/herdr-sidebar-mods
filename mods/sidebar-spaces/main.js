@@ -63,6 +63,21 @@ const portOf = (address) => {
   const n = Number(address.slice(address.lastIndexOf(":") + 1));
   return Number.isInteger(n) && n > 0 && n < 65536 ? n : null;
 };
+// The host a machine answers to, taken from its ssh target (`jwu@192.168.3.81`,
+// `[::1]`, or either with a port): a copied port names that host, not the
+// window's `localhost`.
+const hostOf = (target) => {
+  if (!target) return null;
+  let s = String(target).trim();
+  const at = s.lastIndexOf("@");
+  if (at >= 0) s = s.slice(at + 1);
+  if (s.startsWith("[")) {
+    const end = s.indexOf("]");
+    if (end > 0) return s.slice(1, end);
+  }
+  const colon = s.indexOf(":");
+  return colon > 0 ? s.slice(0, colon) : s;
+};
 // Changes made outside Herdr (an editor's save, a commit in another app): looked
 // for this often, in repos the list shows, while the window is in front.
 const FALLBACK = 60000;
@@ -904,12 +919,15 @@ export default class Spaces extends View {
 
   // A space's listening ports under its row, `|` between them: each opens
   // where that server answers. A port on another machine has no tunnel from
-  // this side, so clicking it copies the address instead of opening a page
+  // this side, so clicking it copies `host:port` instead of opening a page
   // that would not load.
   portRow(w, t, tree) {
     const ports = this.ports[w.machine ?? ""]?.[w.id] ?? [];
     if (!ports.length) return null;
     const local = !w.machine;
+    const host = local
+      ? "localhost"
+      : hostOf(this.machines.find((m) => m.name === w.machine)?.target) ?? w.machine;
     return h_flex()
       .id(`space-ports-${w.id}`)
       .flex_none()
@@ -927,12 +945,12 @@ export default class Spaces extends View {
           .cursor_pointer()
           .text_color(t.ansi4)
           .hover(s => s.text_color(t.foreground).underline())
-          .tooltip(local ? `${p.address} \u00b7 opens in a browser` : `${p.address} \u00b7 click to copy: no tunnel from here to ${w.machine}`)
+          .tooltip(local ? `${p.address} \u00b7 opens in a browser` : `${host}:${p.number} \u00b7 click to copy`)
           .on_click((_e, cx) => {
             if (local) cx.open_url(`http://localhost:${p.number}/`);
             else {
-              cx.write_to_clipboard(`localhost:${p.number}`);
-              window().push_toast({ title: `localhost:${p.number}`, description: `Copied: no tunnel from here to ${w.machine}.`, level: "info" });
+              cx.write_to_clipboard(`${host}:${p.number}`);
+              window().push_toast({ title: `${host}:${p.number}`, level: "info" });
             }
           })
           .child(`:${p.number}`),

@@ -71,8 +71,8 @@ binding only changes what a keypress reaches.
   (`HC_TERMINAL_ID`, or `HERDR_WORKSPACE_ID` for a pane Herdr itself started),
   so anything started outside Herdr — a system service, a container, a server
   from your login shell — stays out of the list. A port on another machine
-  copies `localhost:PORT` instead of opening a page, because there is no tunnel
-  from this window.
+  copies `IP:PORT` (the host from that machine's ssh target) instead of opening
+  a page, because there is no tunnel from this window.
 
 ## License
 
