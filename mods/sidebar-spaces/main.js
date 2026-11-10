@@ -55,6 +55,14 @@ const RAIL_CELL = 32;
 const railCell = (el) => h_flex().flex_none().justify_center().child(el);
 const where = (s, ps) => JSON.stringify([s.machine ?? null, place(s, ps)]);
 const base = (path) => path.replace(/\/+$/, "").split("/").pop();
+// A space, tab, pane or terminal id without its machine prefix: a process on
+// that machine names its own terminal the bare way.
+const bare = (id) => id.slice(id.lastIndexOf("/") + 1);
+// A listening socket's port, from `127.0.0.1:3000` or `[::1]:3000`.
+const portOf = (address) => {
+  const n = Number(address.slice(address.lastIndexOf(":") + 1));
+  return Number.isInteger(n) && n > 0 && n < 65536 ? n : null;
+};
 // Changes made outside Herdr (an editor's save, a commit in another app): looked
 // for this often, in repos the list shows, while the window is in front.
 const FALLBACK = 60000;
@@ -90,6 +98,54 @@ const STAT_SCRIPT = [
   'esac',
 ].join("\n");
 const clamp = (v) => Math.min(100, Math.max(0, v));
+
+// The ports a space's servers listen on, read the way Sheprd reads its sidebar:
+// a listener proves where it was started by the terminal it inherited, never by
+// a process tree or a working folder. herdr-core exports HC_TERMINAL_ID into
+// every terminal it opens and Herdr exports HERDR_WORKSPACE_ID into every pane
+// it starts; a listener with neither (a system service, a container, anything
+// started outside Herdr) belongs to no space and is dropped. `L` is one
+// listening socket, `O` one owner a listener named.
+const PORT_EVERY = 5000;
+const PORT_TIMEOUT = 15000;
+const PORT_SCRIPT = [
+  'for herdr_dir in /usr/sbin /sbin; do',
+  '  case ":$PATH:" in',
+  '    *":$herdr_dir:"*) ;;',
+  '    *) PATH="$PATH:$herdr_dir" ;;',
+  '  esac',
+  'done',
+  'if command -v ss >/dev/null 2>&1; then',
+  "  herdr_ports=$(ss -ltnp 2>/dev/null | awk '{",
+  '    rest = $0',
+  '    while (match(rest, /\\("[^"]*",pid=[0-9]+/)) {',
+  '      entry = substr(rest, RSTART + 2, RLENGTH - 2)',
+  '      rest = substr(rest, RSTART + RLENGTH)',
+  '      split(entry, part, "\\",pid=")',
+  '      print "L", part[2], $4',
+  '    }',
+  "  }')",
+  'elif command -v lsof >/dev/null 2>&1; then',
+  "  herdr_ports=$(lsof -nP -iTCP -sTCP:LISTEN -Fpcn 2>/dev/null | awk '",
+  '    /^p/ { pid = substr($0, 2) }',
+  "    /^n/ { print \"L\", pid, substr($0, 2) }')",
+  'else',
+  '  herdr_ports=N',
+  'fi',
+  "printf '%s\\n' \"$herdr_ports\"",
+  "for herdr_pid in $(printf '%s\\n' \"$herdr_ports\" | awk '$1 == \"L\" { print $2 }' | sort -un | head -n 128); do",
+  '  if [ -r "/proc/$herdr_pid/environ" ]; then',
+  "    herdr_env=$(tr '\\0' '\\n' < \"/proc/$herdr_pid/environ\")",
+  '  else',
+  "    herdr_env=$(ps -E -ww -o command= -p \"$herdr_pid\" 2>/dev/null | tr ' ' '\\n')",
+  '  fi',
+  '  for herdr_key in HERDR_WORKSPACE_ID HC_TERMINAL_ID; do',
+  "    herdr_val=$(printf '%s\\n' \"$herdr_env\" | sed -n \"s/^$herdr_key=//p\" | head -n 1)",
+  '    [ -n "$herdr_val" ] && printf \'O %s %s %s\\n\' "$herdr_pid" "$herdr_key" "$herdr_val"',
+  '  done',
+  'done',
+  'true',
+].join("\n");
 
 // A space speaks up only when something in it needs you.
 export function glyph(status) {
@@ -132,6 +188,9 @@ export default class Spaces extends View {
     this.ticks = {}; // machine -> its last Linux CPU counters
     this.statsAt = {}; // machine -> when it was last asked
     this.sampling = new Set(); // machines a sample is in flight for
+    this.ports = {}; // machine "" -> { space -> [{ number, address }] }
+    this.portAt = {}; // machine -> when its ports were last read
+    this.portScan = new Set(); // machines a port scan is in flight for
     this.reconnecting = JSON.parse(localStorage.getItem("machines.reconnecting") ?? "{}");
     for (const state of Object.values(this.reconnecting)) state.busy = false;
     this.folded = new Set(JSON.parse(localStorage.getItem("machines.folded") ?? "[]"));
@@ -150,7 +209,7 @@ export default class Spaces extends View {
     });
     this.refreshMachines(cx);
     cx.timer.every(15000, cx => this.refreshMachines(cx));
-    cx.timer.every(2000, cx => this.refreshStats(cx));
+    cx.timer.every(2000, cx => { this.refreshStats(cx); this.refreshPorts(cx); });
     // `git status` walks the whole tree, on another machine a process there:
     // only when its answer could have changed (see `due`).
     cx.timer.every(250, (cx) => this.checkNew(cx));
@@ -233,6 +292,87 @@ export default class Spaces extends View {
         cx.notify();
       });
     }
+  }
+
+  // Each machine's listening ports, grouped by the space whose terminal
+  // started the server. One look at a time per machine, five seconds apart; a
+  // machine that is away keeps the ports it had.
+  refreshPorts(cx) {
+    const now = Date.now();
+    for (const m of this.machineNames()) {
+      const key = m ?? "";
+      if (this.portScan.has(key) || now - (this.portAt[key] ?? 0) < PORT_EVERY) continue;
+      if (m && !this.machines.some(k => k.name === m && k.state === "connected")) continue;
+      this.portAt[key] = now;
+      this.portScan.add(key);
+      cx.spawn(async (cx) => {
+        let out = null;
+        try {
+          const r = await exec("sh", ["-c", PORT_SCRIPT], { on: m, timeout: PORT_TIMEOUT });
+          if (r.code === 0) out = r.stdout;
+        } catch {}
+        if (out != null) this.takePorts(key, out);
+        this.portScan.delete(key);
+        cx.notify();
+      });
+    }
+  }
+
+  // One machine's answer: its listening sockets, each put in the space whose
+  // terminal its process named.
+  takePorts(key, out) {
+    const listeners = [];
+    const owners = new Map();
+    for (const line of out.split("\n")) {
+      const f = line.trim().split(" ");
+      if (f[0] === "L") {
+        const number = portOf(f[2] ?? "");
+        if (f[1] && number) listeners.push({ pid: f[1], number, address: f[2] });
+      } else if (f[0] === "O" && f[1] && f[3]) {
+        const owner = owners.get(f[1]) ?? {};
+        owner[f[2] === "HERDR_WORKSPACE_ID" ? "workspace" : "terminal"] = f[3];
+        owners.set(f[1], owner);
+      }
+    }
+    const machine = key || null;
+    const sp = spaces();
+    const tabSpace = new Map();
+    for (const s of sp) {
+      if ((s.machine ?? null) !== machine) continue;
+      for (const tab of s.tabs ?? []) tabSpace.set(tab.id, s.id);
+    }
+    // A pane id carries its machine's prefix; the process names only the bare
+    // terminal, so both spellings lead to the space.
+    const terminalSpace = new Map();
+    for (const p of panes()) {
+      const space = tabSpace.get(p.tab);
+      if (!space || !p.terminal) continue;
+      terminalSpace.set(p.terminal, space);
+      terminalSpace.set(bare(p.terminal), space);
+    }
+    const spaceOf = (owner) => {
+      if (!owner) return null;
+      if (owner.terminal) {
+        const space = terminalSpace.get(owner.terminal) ?? terminalSpace.get(bare(owner.terminal));
+        if (space) return space;
+      }
+      if (owner.workspace) {
+        const want = bare(owner.workspace);
+        const space = sp.find(s => (s.machine ?? null) === machine && bare(s.id) === want);
+        if (space) return space.id;
+      }
+      return null;
+    };
+    const found = {};
+    for (const listener of listeners) {
+      const space = spaceOf(owners.get(listener.pid));
+      if (!space) continue;
+      const list = found[space] ??= [];
+      if (list.length >= 32 || list.some(p => p.number === listener.number)) continue;
+      list.push({ number: listener.number, address: listener.address });
+    }
+    for (const list of Object.values(found)) list.sort((a, b) => a.number - b.number);
+    this.ports[key] = found;
   }
 
   // One machine's answer: `os`, cores, memory, CPU counters (Linux) or a
@@ -543,7 +683,11 @@ export default class Spaces extends View {
   // The rows, under a header per machine once one isn't this computer.
   grouped(t, collapsed) {
     const rows = this.ordered();
-    const draw = (r) => (collapsed ? this.compact(r, t) : this.row(r, t));
+    // A space draws as its row and, under it, the ports its servers listen on;
+    // both sit inside one selection box (see `spaceBox`).
+    const draw = (r) => collapsed
+      ? [this.compact(r, t)]
+      : [this.spaceBox(r, t)];
     const loading = m => {
       const layout = machines().find(k => k.name === m)?.layout;
       return layout === "loading" || (!layout && this.machines.some(k => k.name === m && k.state === "connected"))
@@ -551,7 +695,7 @@ export default class Spaces extends View {
     };
     const loadingRow = m => h_flex().id(`machine-loading-${m ?? "local"}`).h(28).flex_none().ml(collapsed ? 0 : 20).mr(collapsed ? 0 : 8).my(1).px(collapsed ? 0 : 8).items_center().when(collapsed, el => el.justify_center()).text_size(12).text_color(t.dim).child(collapsed ? "…" : "Loading…");
     const machineNames = this.arranged(this.machineNames());
-    if (machineNames.length < 2) return loading(null) && !rows.length ? [loadingRow(null)] : rows.map(draw);
+    if (machineNames.length < 2) return loading(null) && !rows.length ? [loadingRow(null)] : rows.flatMap(draw);
     return machineNames.flatMap((m) => {
       const mine = rows.filter((r) => (r.w.machine ?? null) === m);
       const repair = this.reconnecting[m];
@@ -634,7 +778,7 @@ export default class Spaces extends View {
         .when(!collapsed, el => el.child(svg("mods/workspace-chrome/plus.svg").size(12)).child("New space there"));
       if (!collapsed && rebuilt) return [head];
       const cell = collapsed ? railCell : (el) => el;
-      return [cell(head), ...(folded ? [] : mine.length ? mine.map(draw) : [loading(m) ? loadingRow(m) : cell(empty)])];
+      return [cell(head), ...(folded ? [] : mine.length ? mine.flatMap(draw) : [loading(m) ? loadingRow(m) : cell(empty)])];
     });
   }
 
@@ -673,7 +817,6 @@ export default class Spaces extends View {
   }
 
   row({ w, i, g, tree }, t) {
-    const on = w.active;
     const px = find(layout(), "sidebar")?.size?.px ?? Infinity;
     // Everything the row shows up to the status slot and the folder icon.
     const room = Math.max(0, px - (tree ? 118 : 96));
@@ -693,17 +836,10 @@ export default class Spaces extends View {
     return v_flex()
       .relative()
       .id(`space-${w.id}`)
-      .ml(20)
-      .mr(8)
-      .my(1)
       .px(8)
       .h(rowHeight({ tree }))
       .flex_none()
       .justify_center()
-      .rounded(4)
-      .when(on, (el) => el.bg(t.ansi5 + "33"))
-      .when(!on, (el) => el.hover((s) => s.bg(t.hover)))
-      .when(this.pressed === w.id && this.over !== w.id, (el) => el.opacity(0.5))
       .when(this.pressed !== null && this.over === w.id && this.pressed !== w.id, (el) => el.child(
         div().absolute().left(0).right(0).h(2).bg(t.accent)
           .when(fromIndex < i, line => line.bottom(0))
@@ -744,6 +880,63 @@ export default class Spaces extends View {
           .when(!tree, el => el.child(svg("mods/workspace-chrome/folder.svg").size(16).flex_none().text_color(t.dim)))
           .when(Boolean(lines), el => el.child(lines)),
       );
+  }
+
+  // A space's row and the ports under it share one selection box: selecting or
+  // hovering a space highlights the ports with it, not only its first line.
+  spaceBox(row, t) {
+    const { w } = row;
+    const on = w.active;
+    const has = Boolean(this.ports[w.machine ?? ""]?.[w.id]?.length);
+    return v_flex()
+      .id(`space-box-${w.id}`)
+      .flex_none()
+      .ml(20)
+      .mr(8)
+      .my(1)
+      .rounded(4)
+      .when(on, (el) => el.bg(t.ansi5 + "33"))
+      .when(!on, (el) => el.hover((s) => s.bg(t.hover)))
+      .when(this.pressed === w.id && this.over !== w.id, (el) => el.opacity(0.5))
+      .child(this.row(row, t))
+      .when(has, (el) => el.child(this.portRow(w, t, row.tree)));
+  }
+
+  // A space's listening ports under its row, `|` between them: each opens
+  // where that server answers. A port on another machine has no tunnel from
+  // this side, so clicking it copies the address instead of opening a page
+  // that would not load.
+  portRow(w, t, tree) {
+    const ports = this.ports[w.machine ?? ""]?.[w.id] ?? [];
+    if (!ports.length) return null;
+    const local = !w.machine;
+    return h_flex()
+      .id(`space-ports-${w.id}`)
+      .flex_none()
+      .h(18)
+      .px(8)
+      .pl(tree ? 75 : 56)
+      .gap(5)
+      .items_center()
+      .overflow_hidden()
+      .text_size(10.5)
+      .children(ports.flatMap((p, i) => [
+        ...(i ? [div().flex_none().text_color(t.dim).child("|")] : []),
+        div()
+          .flex_none()
+          .cursor_pointer()
+          .text_color(t.ansi4)
+          .hover(s => s.text_color(t.foreground).underline())
+          .tooltip(local ? `${p.address} \u00b7 opens in a browser` : `${p.address} \u00b7 click to copy: no tunnel from here to ${w.machine}`)
+          .on_click((_e, cx) => {
+            if (local) cx.open_url(`http://localhost:${p.number}/`);
+            else {
+              cx.write_to_clipboard(`localhost:${p.number}`);
+              window().push_toast({ title: `localhost:${p.number}`, description: `Copied: no tunnel from here to ${w.machine}.`, level: "info" });
+            }
+          })
+          .child(`:${p.number}`),
+      ]));
   }
 
   compact({ w, i }, t) {

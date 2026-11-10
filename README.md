@@ -10,7 +10,7 @@ space, agent state icons in front of each row, and a quieter purple selection.
 
 | Mod | Replaces | What it adds |
 | --- | --- | --- |
-| `sidebar-spaces` | the shipped `spaces` mod | full-width machine headers with a CPU sparkline and a memory meter (drag one onto another to reorder the machines; ctrl-1..9 can follow that order), a branch ▸ remote tail per space, state icons, 2px row gaps |
+| `sidebar-spaces` | the shipped `spaces` mod | full-width machine headers with a CPU sparkline and a memory meter (drag one onto another to reorder the machines; ctrl-1..9 can follow that order), a branch ▸ remote tail per space, a dim line of listening ports (`:3000 \| :5173`) under the space whose terminal started them, state icons, 2px row gaps |
 | `sidebar-agents` | the shipped `agents` mod | two-line rows — folder, machine and that place's git tail on the first, then the program icon and title — state icon first in every row, 2px row gaps, the same purple selection and 4px corners |
 
 They are meant to be used together, but each works on its own.
@@ -65,6 +65,14 @@ binding only changes what a keypress reaches.
   layout does): both mods read its width to fall back to a compact rendering.
 - The machine headers sample each machine with a POSIX shell over `exec`; a
   machine without one (plain Windows) shows `—` for CPU and memory.
+- A space's ports come from `ss -ltnp` (Linux/WSL) or `lsof -nP -iTCP -sTCP:LISTEN`
+  (macOS), read in that machine's own shell. Only servers started from a Herdr
+  terminal are listed: the scan looks for the terminal a listener inherited
+  (`HC_TERMINAL_ID`, or `HERDR_WORKSPACE_ID` for a pane Herdr itself started),
+  so anything started outside Herdr — a system service, a container, a server
+  from your login shell — stays out of the list. A port on another machine
+  copies `localhost:PORT` instead of opening a page, because there is no tunnel
+  from this window.
 
 ## License
 

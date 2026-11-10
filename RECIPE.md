@@ -34,7 +34,9 @@ has no agent), a folder icon (branch icon for a worktree, indented another
 dim type: the repository name when it differs from the space's, a branch icon
 with the branch name, `▸` and the remote it tracks (`dev ▸ origin`), and green
 `↑n` / red `↓n` ahead/behind counts. The selected row is the theme's magenta at
-20% opacity; other rows darken on hover.
+20% opacity; other rows darken on hover. The selection is one box around the
+row *and* its ports line, so a selected space highlights both lines with one
+4px-cornered block instead of ending above the ports.
 
 The Agents panel repeats the pattern: a header with `Agents` and a clock
 button that opens the sort menu, then sections (Pinned, then Needs you /
@@ -53,6 +55,14 @@ keeps six glyphs before the tail gives up its share. The git tail is read with
 on the agent's own machine. Sub-agent
 rows are 26px, indented under tree lines. The selected agent row is the same
 magenta at 20%.
+
+Under a space row, when any of its terminals is listening, sits its ports line:
+18px tall, 10.5px type in the theme's blue, indented to where the space's
+name starts: each `:3000` is a listening port one of that space's own
+terminals started, with a dim `|` between them, and clicking it opens `http://localhost:PORT/`. A port on another
+machine copies `localhost:PORT` to the clipboard instead, since there is no
+tunnel from this window; its tooltip says so, and gives the socket's address
+(`*:3000`, `127.0.0.1:3000`).
 
 **How it behaves:** clicking a machine band folds or unfolds its spaces
 (remembered in `localStorage` under `machines.folded`); clicking `+` starts a
@@ -103,7 +113,14 @@ the Linux path. The machine list is `hc machine ls --json` every 15s; git is
 `git --no-optional-locks status --porcelain=v2 --branch` plus `rev-parse` per
 space folder, refreshed when a terminal's command ends, a space moves, or a
 machine comes back, with local repos watched via `watchFolder`. Space colors
-under `space.colors` stay maintained for the space picker.
+under `space.colors` stay maintained for the space picker. Listening ports are
+read the way Sheprd reads its sidebar: every 5s each connected machine runs
+`ss -ltnp` (else `lsof -nP -iTCP -sTCP:LISTEN`) in its own shell, and each
+listening pid's environment names where it was started — `HC_TERMINAL_ID` from
+herdr-core, `HERDR_WORKSPACE_ID` from a Herdr pane — which `panes()` and
+`spaces()` resolve to a space through the pane's tab. A listener that names
+neither is dropped rather than guessed at from a process tree or a working
+folder.
 
 **Watch out:** both mods assume the layout's sidebar node keeps `"id":
 "sidebar"` — they read its width for the compact fallbacks, and without it the
@@ -120,7 +137,13 @@ square while the space rows are inset and rounded; the 2px row gaps and 4px
 corners are intentional, not spacing accidents. The layout blocks must point at
 `sidebar-spaces` and `sidebar-agents` after installing; the shipped `spaces`
 and `agents` are rewritten by Herdr on every start, so never edit those in
-place.
+place. A port line needs either `ss` or `lsof` on that machine (both read only
+that user's own sockets), and it shows nothing for a server started outside
+Herdr's terminals, so `docker run -p`, a systemd unit, or a server from your
+login shell stays invisible by design. A remote port cannot be opened from
+here — `hc` has no port forwarding — so a click copies the address instead. The
+line sits under the space and indents past its icons, so a space with servers
+is 18px taller than one without.
 
 **Done when:** `herdr-app check mods/sidebar-spaces` and `herdr-app check
 mods/sidebar-agents` both pass; a screenshot of the window shows a machine band
@@ -132,4 +155,7 @@ its rows; dragging a machine band onto another header reorders the machines and
 survives a reload; `herdr-app do sidebar-spaces.pick5` shows the fifth row the
 panel draws, and ctrl-5 does the same once `keys.json` binds it; `+` starts a space; dragging a space row shows the accent line and
 moves it; narrowing the sidebar below 260px swaps the sparkline and meter for
-gauges, and below 200px leaves numbers only.
+gauges, and below 200px leaves numbers only; a server started in a space's
+terminal (`python3 -m http.server 8000`) lists `:8000` under that space within
+five seconds, clicking it opens it in the browser, and ending the server takes
+the number away.
