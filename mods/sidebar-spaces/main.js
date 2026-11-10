@@ -30,6 +30,9 @@ const rowHeight = ({ tree }) => (tree ? 28 : 30);
 // one glyph, then they grow in turn until the line is full, so a long name
 // cannot crowd the branch out. Sheprd budgets its sidebar labels the same way.
 const GLYPH = 8;
+const fit = (text, glyphs) => (text.length <= glyphs ? text : `${text.slice(0, Math.max(0, glyphs - 1))}\u2026`);
+// The tail is cut to its budget and then sized by its own text, so it ends at
+// the row's right edge instead of at the end of a wider measured cell.
 const SEG_GAP = 6;
 function segmentBudgets(lengths, available) {
   const budgets = lengths.map((n) => (n > 0 ? 1 : 0));
@@ -656,9 +659,9 @@ export default class Spaces extends View {
       .items_center()
       .children(kept.map((p, i) => div()
         .when(i === 0, (el) => el.flex_1().min_w(0))
-        .when(i > 0, (el) => el.flex_none().w(widths[i] * GLYPH))
+        .when(i > 0, (el) => el.flex_none())
         .truncate()
-        .text_size(p.size ?? 11.5).text_color(p.color).child(p.text)));
+        .text_size(p.size ?? 11.5).text_color(p.color).child(i === 0 ? p.text : fit(p.text, widths[i]))));
   }
 
   row({ w, i, g, tree }, t) {
