@@ -1,5 +1,6 @@
 // Workspace spaces: stable colored avatars, worktrees under their checkout,
-// grouped by machine when more than one is known. After a space's name, the repo
+// grouped under a header per machine, even when only this computer is known.
+// After a space's name, the repo
 // its first terminal is in now, only where unusual: branch, ahead/behind. Agent state lives in the agents list, not here. Click to
 // switch, right-click for its menu, drag to reorder.
 
@@ -695,7 +696,8 @@ export default class Spaces extends View {
     if (row) run("space.select", { id: row.w.id });
   }
 
-  // The rows, under a header per machine once one isn't this computer.
+  // The rows, under a header per machine. The header stays for this computer
+  // alone, so a single-machine panel keeps showing its load.
   grouped(t, collapsed) {
     const rows = this.ordered();
     // A space draws as its row and, under it, the ports its servers listen on;
@@ -710,7 +712,6 @@ export default class Spaces extends View {
     };
     const loadingRow = m => h_flex().id(`machine-loading-${m ?? "local"}`).h(28).flex_none().ml(collapsed ? 0 : 20).mr(collapsed ? 0 : 8).my(1).px(collapsed ? 0 : 8).items_center().when(collapsed, el => el.justify_center()).text_size(12).text_color(t.dim).child(collapsed ? "…" : "Loading…");
     const machineNames = this.arranged(this.machineNames());
-    if (machineNames.length < 2) return loading(null) && !rows.length ? [loadingRow(null)] : rows.flatMap(draw);
     return machineNames.flatMap((m) => {
       const mine = rows.filter((r) => (r.w.machine ?? null) === m);
       const repair = this.reconnecting[m];
