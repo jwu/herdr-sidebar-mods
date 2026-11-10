@@ -409,7 +409,7 @@ export default class Spaces extends View {
       const common = await exec("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd, on });
       const repo = common.stdout.trim();
       const name = repo.endsWith("/.git") ? base(repo.slice(0, -5)) : base(repo).replace(/\.git$/, "");
-      const info = { name, branch: null, upstream: null, ahead: 0, behind: 0, repo: JSON.stringify([on, repo]), linked: repo !== `${top.stdout.trim()}/.git` };
+      const info = { name, branch: null, upstream: null, ahead: 0, behind: 0, dirty: 0, conflicts: 0, repo: JSON.stringify([on, repo]), linked: repo !== `${top.stdout.trim()}/.git` };
       for (const line of r.stdout.split("\n")) {
         if (line.startsWith("# branch.head ")) info.branch = line.slice(14);
         else if (line.startsWith("# branch.upstream ")) info.upstream = line.slice(18);
@@ -418,6 +418,9 @@ export default class Spaces extends View {
           info.ahead = Math.abs(parseInt(a, 10)) || 0;
           info.behind = Math.abs(parseInt(b, 10)) || 0;
         }
+        // Work in the tree: `1`/`2` changed or renamed, `?` untracked, `u` a conflict.
+        else if (line.startsWith("u ")) { info.dirty++; info.conflicts++; }
+        else if (/^[12?] /.test(line)) info.dirty++;
       }
       this.git[key] = info;
       if (!on) this.watch(repo, cx);
@@ -681,6 +684,8 @@ export default class Spaces extends View {
     const lines = this.nameLine([
       { text: w.name, color: t.foreground, size: 13 },
       ...(tail ? [{ text: tail, color: t.dim }] : []),
+      ...(g?.dirty > 0 ? [{ text: `*${g.dirty}`, color: t.ansi3, fixed: true }] : []),
+      ...(g?.conflicts > 0 ? [{ text: `\u2718${g.conflicts}`, color: t.ansi1, fixed: true }] : []),
       ...(g?.ahead > 0 ? [{ text: `\u2191${g.ahead}`, color: t.ansi2, fixed: true }] : []),
       ...(g?.behind > 0 ? [{ text: `\u2193${g.behind}`, color: t.ansi1, fixed: true }] : []),
     ], room);

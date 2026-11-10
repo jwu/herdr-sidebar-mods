@@ -46,7 +46,8 @@ agent's pane is in (its space when the pane has none), with the sub-agent fold
 count and an age that becomes a pin button on hover flush right. The second
 leads with a monitor icon for this computer or a server icon and the machine's
 name (`Local` here), then flush right that place's branch `▸` remote and
-`↑n`/`↓n`. That line is budgeted the same way as a space row's: the machine
+`↑n`/`↓n`, plus `*n` for files changed and `✘n` for conflicts, as on a space
+row. That line is budgeted the same way as a space row's: the machine
 keeps six glyphs before the tail gives up its share. The git tail is read with
 `git status --porcelain=v2 --branch` at most every 30s per folder, over `exec`
 on the agent's own machine. Sub-agent
@@ -76,7 +77,10 @@ panel falls back to the icon rail (numbers only, one letter cell per machine).
 A space row shares its line between the name and its git tail by character
 budget: each segment keeps one glyph, then they grow in turn until the line is
 full, and the tail gives up its share before the name drops under eight glyphs.
-No width step switches that, so dragging the sidebar narrows both smoothly. Agents fold and unfold their sub-agents from the
+No width step switches that, so dragging the sidebar narrows both smoothly. The
+tail also carries the tree's work in the theme's yellow (`*3` files changed) and
+its conflicts in red (`✘1`), and its ahead/behind counts in starship's green and
+red, each a fixed segment of its own. Agents fold and unfold their sub-agents from the
 program icon, sort by priority or by space from the clock menu (remembered in
 the mod's shared state `agents.sort`), and pin an agent with the pin button
 that appears on hover (`terminal.pin`).

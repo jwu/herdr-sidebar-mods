@@ -166,7 +166,7 @@ export default class Agents extends View {
             this.git[key] = null;
             continue;
           }
-          const info = { branch: null, upstream: null, ahead: 0, behind: 0 };
+          const info = { branch: null, upstream: null, ahead: 0, behind: 0, dirty: 0, conflicts: 0 };
           for (const line of r.stdout.split("\n")) {
             if (line.startsWith("# branch.head ")) info.branch = line.slice(14);
             else if (line.startsWith("# branch.upstream ")) info.upstream = line.slice(18);
@@ -175,6 +175,9 @@ export default class Agents extends View {
               info.ahead = Math.abs(parseInt(a, 10)) || 0;
               info.behind = Math.abs(parseInt(b, 10)) || 0;
             }
+            // Work in the tree: `1`/`2` changed or renamed, `?` untracked, `u` a conflict.
+            else if (line.startsWith("u ")) { info.dirty++; info.conflicts++; }
+            else if (/^[12?] /.test(line)) info.dirty++;
           }
           this.git[key] = info.branch && info.branch !== "(detached)" ? info : null;
         } catch {
@@ -476,6 +479,8 @@ export default class Agents extends View {
       const line = this.nameLine([
         { text: machine ?? "Local", color: t.dim },
         ...(tail ? [{ text: tail, color: t.dim }] : []),
+        ...(g?.dirty > 0 ? [{ text: `*${g.dirty}`, color: t.ansi3, fixed: true }] : []),
+        ...(g?.conflicts > 0 ? [{ text: `\u2718${g.conflicts}`, color: t.ansi1, fixed: true }] : []),
         ...(g?.ahead > 0 ? [{ text: `\u2191${g.ahead}`, color: t.ansi2, fixed: true }] : []),
         ...(g?.behind > 0 ? [{ text: `\u2193${g.behind}`, color: t.ansi1, fixed: true }] : []),
       ], Math.max(0, px - 88));
