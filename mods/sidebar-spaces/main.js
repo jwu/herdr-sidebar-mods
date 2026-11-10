@@ -931,6 +931,7 @@ export default class Spaces extends View {
     return h_flex()
       .id(`space-ports-${w.id}`)
       .flex_none()
+      .w_full()
       .h(18)
       .px(8)
       .pl(tree ? 75 : 56)
@@ -938,6 +939,21 @@ export default class Spaces extends View {
       .items_center()
       .overflow_hidden()
       .text_size(10.5)
+      // The row under a space's ports selects that space when clicked on its
+      // air; a port itself stops the press so it only opens (or copies) and
+      // leaves the current space alone.
+      .on_mouse_down("left", () => {
+        this.pressed = w.id;
+        this.over = w.id;
+      })
+      .on_mouse_up("left", (_e, cx) => {
+        const same = this.pressed === w.id;
+        this.pressed = null;
+        this.over = null;
+        if (same) run("space.select", { id: w.id });
+        cx.notify();
+      })
+      .on_mouse_down("right", () => this.menu(w))
       .children(ports.flatMap((p, i) => [
         ...(i ? [div().flex_none().text_color(t.dim).child("|")] : []),
         div()
@@ -946,6 +962,17 @@ export default class Spaces extends View {
           .text_color(t.ansi4)
           .hover(s => s.text_color(t.foreground).underline())
           .tooltip(local ? `${p.address} \u00b7 opens in a browser` : `${host}:${p.number} \u00b7 click to copy`)
+          .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+          .on_mouse_up("left", (_e, cx) => {
+            cx.stop_propagation();
+            // A drag that started on a space row and ended on a port leaves
+            // its press behind when the port swallows the release.
+            if (this.pressed !== null) {
+              this.pressed = null;
+              this.over = null;
+              cx.notify();
+            }
+          })
           .on_click((_e, cx) => {
             if (local) cx.open_url(`http://localhost:${p.number}/`);
             else {

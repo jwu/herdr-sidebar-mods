@@ -63,6 +63,8 @@ terminals started, with a dim `|` between them, and clicking it opens `http://lo
 machine copies `IP:PORT` to the clipboard instead, since there is no tunnel from
 this window: the IP is that machine's ssh target host (`jwu@192.168.3.81` gives
 `192.168.3.81`), and the tooltip reads `192.168.3.81:3000 · click to copy`.
+Clicking the line's air between ports selects that space; a port itself only
+opens (or copies), leaving the current space alone.
 
 **How it behaves:** clicking a machine band folds or unfolds its spaces
 (remembered in `localStorage` under `machines.folded`); clicking `+` starts a
