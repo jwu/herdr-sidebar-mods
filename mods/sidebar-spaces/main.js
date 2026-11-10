@@ -641,27 +641,32 @@ export default class Spaces extends View {
   // One line of segments sharing `room`: measured against the glyph estimate,
   // each segment keeps one glyph and grows in turn. Segments past the space go,
   // lowest priority first, so the name stays and the tail gives way.
+  // `fixed` parts keep their own width and color at the end of the line (ahead
+  // and behind counts); the rest share the room by budget.
   nameLine(parts, room) {
-    // The name keeps a readable share before the tail may stay at all.
     const MIN_NAME = 8;
-    let kept = parts.filter((p) => p.text);
-    const glyphs = (n) => Math.floor((room - SEG_GAP * Math.max(0, n - 1)) / GLYPH);
+    const fixed = parts.filter((p) => p.fixed && p.text);
+    let kept = parts.filter((p) => !p.fixed && p.text);
+    const reserved = fixed.reduce((n, p) => n + p.text.length * GLYPH + SEG_GAP, 0);
+    const glyphs = (n) => Math.floor((room - reserved - SEG_GAP * Math.max(0, n - 1)) / GLYPH);
     while (kept.length > 1 && (glyphs(kept.length) < kept.length || glyphs(kept.length) < MIN_NAME + kept.length - 1)) kept.pop();
-    if (!kept.length) return null;
-    const budget = Math.max(1, Math.floor((room - SEG_GAP * (kept.length - 1)) / GLYPH));
+    if (!kept.length && !fixed.length) return null;
+    const budget = Math.max(1, glyphs(kept.length));
     const widths = segmentBudgets(kept.map((p) => p.text.length), budget);
-    // The name takes what the tail's budget leaves, so the tail sits flush right
-    // however the line is measured.
+    // The name takes what the tail's budget leaves, so the tail sits flush right.
     return h_flex()
       .flex_1()
       .min_w(0)
       .gap(SEG_GAP)
       .items_center()
-      .children(kept.map((p, i) => div()
-        .when(i === 0, (el) => el.flex_1().min_w(0))
-        .when(i > 0, (el) => el.flex_none())
-        .truncate()
-        .text_size(p.size ?? 11.5).text_color(p.color).child(i === 0 ? p.text : fit(p.text, widths[i]))));
+      .children([
+        ...kept.map((p, i) => div()
+          .when(i === 0, (el) => el.flex_1().min_w(0))
+          .when(i > 0, (el) => el.flex_none())
+          .truncate()
+          .text_size(p.size ?? 11.5).text_color(p.color).child(i === 0 ? p.text : fit(p.text, widths[i]))),
+        ...fixed.map((p) => div().flex_none().text_size(p.size ?? 11.5).text_color(p.color).child(p.text)),
+      ]);
   }
 
   row({ w, i, g, tree }, t) {
@@ -670,16 +675,14 @@ export default class Spaces extends View {
     // Everything the row shows up to the status slot and the folder icon.
     const room = Math.max(0, px - (tree ? 118 : 96));
     const remote = g?.upstream?.includes("/") ? `\u25b8 ${g.upstream.slice(0, g.upstream.indexOf("/"))}` : "";
-    // The tail reads as one segment, so the name keeps the larger share.
-    const tail = [
-      g?.branch,
-      remote,
-      g?.ahead > 0 ? `\u2191${g.ahead}` : "",
-      g?.behind > 0 ? `\u2193${g.behind}` : "",
-    ].filter(Boolean).join(" ");
+    // The tail reads as one segment, so the name keeps the larger share; the
+    // counts keep their own colors, green ahead and red behind as starship's.
+    const tail = [g?.branch, remote].filter(Boolean).join(" ");
     const lines = this.nameLine([
       { text: w.name, color: t.foreground, size: 13 },
       ...(tail ? [{ text: tail, color: t.dim }] : []),
+      ...(g?.ahead > 0 ? [{ text: `\u2191${g.ahead}`, color: t.ansi2, fixed: true }] : []),
+      ...(g?.behind > 0 ? [{ text: `\u2193${g.behind}`, color: t.ansi1, fixed: true }] : []),
     ], room);
     const fromIndex = this.pressed === null ? -1 : spaces().findIndex(s => s.id === this.pressed);
     return v_flex()
