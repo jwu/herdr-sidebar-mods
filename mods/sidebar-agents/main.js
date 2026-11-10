@@ -195,12 +195,17 @@ export default class Agents extends View {
     if (!kept.length) return null;
     const budget = Math.max(1, glyphs(kept.length));
     const widths = segmentBudgets(kept.map((p) => p.text.length), budget);
+    // The name takes what the tail's budget leaves, so the tail sits flush right
+    // however the line is measured.
     return h_flex()
-      .flex_none()
+      .flex_1()
       .min_w(0)
       .gap(SEG_GAP)
       .items_center()
-      .children(kept.map((p, i) => div().flex_none().truncate().w(widths[i] * GLYPH)
+      .children(kept.map((p, i) => div()
+        .when(i === 0, (el) => el.flex_1().min_w(0))
+        .when(i > 0, (el) => el.flex_none().w(widths[i] * GLYPH))
+        .truncate()
         .text_size(11).text_color(p.color).child(p.text)));
   }
 
@@ -499,7 +504,7 @@ export default class Agents extends View {
             .when(subs.length > 0, (el) => el.child(fold(a, subs)))
             .when(this.hovered === a.address, (el) => el.child(pin))
             .when(this.hovered !== a.address && Boolean(when), (el) => el.child(div().flex_none().text_size(11).text_color(t.dim).child(duration(now - when)))))
-          .child(h_flex().h(16).flex_none().gap(4).items_center()
+          .child(h_flex().h(16).w_full().min_w(0).gap(4).items_center()
             .child(svg(`mods/workspace-chrome/${machine ? "server" : "monitor"}.svg`).size(12).flex_none().text_color(t.dim))
             .when(Boolean(line), (el) => el.child(line))));
     };

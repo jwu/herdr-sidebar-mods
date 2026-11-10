@@ -647,12 +647,17 @@ export default class Spaces extends View {
     if (!kept.length) return null;
     const budget = Math.max(1, Math.floor((room - SEG_GAP * (kept.length - 1)) / GLYPH));
     const widths = segmentBudgets(kept.map((p) => p.text.length), budget);
+    // The name takes what the tail's budget leaves, so the tail sits flush right
+    // however the line is measured.
     return h_flex()
-      .flex_none()
+      .flex_1()
       .min_w(0)
       .gap(SEG_GAP)
       .items_center()
-      .children(kept.map((p, i) => div().flex_none().truncate().w(widths[i] * GLYPH)
+      .children(kept.map((p, i) => div()
+        .when(i === 0, (el) => el.flex_1().min_w(0))
+        .when(i > 0, (el) => el.flex_none().w(widths[i] * GLYPH))
+        .truncate()
         .text_size(p.size ?? 11.5).text_color(p.color).child(p.text)));
   }
 
