@@ -17,10 +17,28 @@ function find(node, id) {
 // The sidebar's rail goes by its width, not a flag: dragging its edge narrows it too.
 const sidebarPx = () => find(layout(), "sidebar")?.size?.px ?? Infinity;
 const narrow = () => sidebarPx() < 160;
-// Below this the git tail gives up its remote, then itself, the way the spaces
-// panel drops the sparkline and then the meters.
-const TAIL_SHORT = 300;
-const TAIL_HIDDEN = 200;
+// A row shares one line between its machine and its git tail: every segment
+// keeps one glyph, then they grow in turn until the line is full, so neither
+// crowds the other out (sheprd budgets its labels the same way).
+const GLYPH = 8;
+const SEG_GAP = 6;
+function segmentBudgets(lengths, available) {
+  const budgets = lengths.map((n) => (n > 0 ? 1 : 0));
+  let left = available - budgets.reduce((a, b) => a + b, 0);
+  while (left > 0) {
+    let grew = false;
+    for (let i = 0; i < budgets.length; i++) {
+      if (budgets[i] > 0 && budgets[i] < lengths[i]) {
+        budgets[i]++;
+        left--;
+        grew = true;
+        if (left === 0) break;
+      }
+    }
+    if (!grew) break;
+  }
+  return budgets;
+}
 
 // To the rail (on macOS wide enough for the traffic lights), or back to the width it had.
 function toggleSidebar() {
@@ -166,24 +184,24 @@ export default class Agents extends View {
     });
   }
 
-  // A row's git tail, as the spaces panel draws one: branch, `▸` and the remote
-  // it tracks, then ahead and behind.
-  gitTail(g, t, full = true) {
-    const remote = full && g.upstream?.includes("/") ? g.upstream.slice(0, g.upstream.indexOf("/")) : "";
+  // One line of segments sharing `room`: measured against the glyph estimate,
+  // each keeps one glyph and grows in turn. The tail goes before the machine
+  // name is left without a readable share.
+  nameLine(parts, room) {
+    const MIN_NAME = 6;
+    let kept = parts.filter((p) => p.text);
+    const glyphs = (n) => Math.floor((room - SEG_GAP * Math.max(0, n - 1)) / GLYPH);
+    while (kept.length > 1 && (glyphs(kept.length) < kept.length || glyphs(kept.length) < MIN_NAME + kept.length - 1)) kept.pop();
+    if (!kept.length) return null;
+    const budget = Math.max(1, glyphs(kept.length));
+    const widths = segmentBudgets(kept.map((p) => p.text.length), budget);
     return h_flex()
-      .min_w(0)
       .flex_none()
-      .gap(4)
+      .min_w(0)
+      .gap(SEG_GAP)
       .items_center()
-      .text_size(11)
-      .text_color(t.dim)
-      .child(svg("mods/workspace-chrome/git-branch.svg").size(10).flex_none().text_color(t.dim))
-      .child(div().min_w(0).truncate().child(g.branch))
-      .when(Boolean(remote), (el) => el
-        .child(div().flex_none().child("\u25b8"))
-        .child(div().min_w(0).truncate().child(remote)))
-      .when(g.ahead > 0, (el) => el.child(div().flex_none().text_color(t.ansi2).child(`\u2191${g.ahead}`)))
-      .when(g.behind > 0, (el) => el.child(div().flex_none().text_color(t.ansi1).child(`\u2193${g.behind}`)));
+      .children(kept.map((p, i) => div().flex_none().truncate().w(widths[i] * GLYPH)
+        .text_size(11).text_color(p.color).child(p.text)));
   }
 
   // Stamps agents whose state changed. Done and idle count as one: looking at a
@@ -438,6 +456,18 @@ export default class Agents extends View {
       const cwd = cwdOf.get(a.pane) ?? null;
       const folder = (cwd && base(cwd)) || a.space_name || label(a);
       const g = cwd ? this.git[gitKey(machine, cwd)] : null;
+      const remote = g?.upstream?.includes("/") ? `\u25b8 ${g.upstream.slice(0, g.upstream.indexOf("/"))}` : "";
+      const tail = [
+        g?.branch,
+        remote,
+        g?.ahead > 0 ? `\u2191${g.ahead}` : "",
+        g?.behind > 0 ? `\u2193${g.behind}` : "",
+      ].filter(Boolean).join(" ");
+      // The row's own columns, off the sidebar width: this is what is left.
+      const line = this.nameLine([
+        { text: machine ?? "Local", color: t.dim },
+        ...(tail ? [{ text: tail, color: t.dim }] : []),
+      ], Math.max(0, px - 88));
       return h_flex()
         .id(`ag-${a.address}`)
         .px(8)
@@ -469,11 +499,9 @@ export default class Agents extends View {
             .when(subs.length > 0, (el) => el.child(fold(a, subs)))
             .when(this.hovered === a.address, (el) => el.child(pin))
             .when(this.hovered !== a.address && Boolean(when), (el) => el.child(div().flex_none().text_size(11).text_color(t.dim).child(duration(now - when)))))
-          .child(h_flex().h(16).flex_none().gap(6).items_center()
-            .child(h_flex().flex_1().min_w(0).gap(4).items_center().text_size(11).text_color(t.dim)
-              .child(svg(`mods/workspace-chrome/${machine ? "server" : "monitor"}.svg`).size(12).flex_none().text_color(t.dim))
-              .child(div().min_w(0).truncate().child(machine ?? "Local")))
-            .when(Boolean(g) && px >= TAIL_HIDDEN, (el) => el.child(div().flex_none().max_w(110).min_w(0).child(this.gitTail(g, t, px >= TAIL_SHORT))))));
+          .child(h_flex().h(16).flex_none().gap(4).items_center()
+            .child(svg(`mods/workspace-chrome/${machine ? "server" : "monitor"}.svg`).size(12).flex_none().text_color(t.dim))
+            .when(Boolean(line), (el) => el.child(line))));
     };
 
     // Groups in list order: spaces (grouped) or priority sections. Agents of a

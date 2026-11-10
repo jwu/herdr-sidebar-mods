@@ -26,6 +26,28 @@ function place(s, ps) {
   return ps.find((p) => tabs.has(p.tab) && p.cwd)?.cwd || s.folder;
 }
 const rowHeight = ({ tree }) => (tree ? 28 : 30);
+// A row shares one line between its name and its git tail: every segment keeps
+// one glyph, then they grow in turn until the line is full, so a long name
+// cannot crowd the branch out. Sheprd budgets its sidebar labels the same way.
+const GLYPH = 8;
+const SEG_GAP = 6;
+function segmentBudgets(lengths, available) {
+  const budgets = lengths.map((n) => (n > 0 ? 1 : 0));
+  let left = available - budgets.reduce((a, b) => a + b, 0);
+  while (left > 0) {
+    let grew = false;
+    for (let i = 0; i < budgets.length; i++) {
+      if (budgets[i] > 0 && budgets[i] < lengths[i]) {
+        budgets[i]++;
+        left--;
+        grew = true;
+        if (left === 0) break;
+      }
+    }
+    if (!grew) break;
+  }
+  return budgets;
+}
 const RAIL_CELL = 32;
 const railCell = (el) => h_flex().flex_none().justify_center().child(el);
 const where = (s, ps) => JSON.stringify([s.machine ?? null, place(s, ps)]);
@@ -613,33 +635,44 @@ export default class Spaces extends View {
   // Only what's unusual, after the name: "herdr \u00b7 spike \u21912 \u21931". The repo or
   // branch goes when the name already says it (a worktree is named after its branch),
   // and master/main go: nearly every space is on one.
-  // The git tail: the space's branch and the remote it tracks (dev \u25b8 origin,
-  // purple as a branch reads), ahead/behind counts, and the repo when it is not
-  // what the space is called.
-  gitTail(g, tree, name, t, full = true) {
-    const same = (a) => a.toLowerCase() === name.toLowerCase();
-    const repo = tree || same(g.name) ? "" : g.name;
-    const remote = full && g.upstream?.includes("/") ? g.upstream.slice(0, g.upstream.indexOf("/")) : "";
+  // One line of segments sharing `room`: measured against the glyph estimate,
+  // each segment keeps one glyph and grows in turn. Segments past the space go,
+  // lowest priority first, so the name stays and the tail gives way.
+  nameLine(parts, room) {
+    // The name keeps a readable share before the tail may stay at all.
+    const MIN_NAME = 8;
+    let kept = parts.filter((p) => p.text);
+    const glyphs = (n) => Math.floor((room - SEG_GAP * Math.max(0, n - 1)) / GLYPH);
+    while (kept.length > 1 && (glyphs(kept.length) < kept.length || glyphs(kept.length) < MIN_NAME + kept.length - 1)) kept.pop();
+    if (!kept.length) return null;
+    const budget = Math.max(1, Math.floor((room - SEG_GAP * (kept.length - 1)) / GLYPH));
+    const widths = segmentBudgets(kept.map((p) => p.text.length), budget);
     return h_flex()
+      .flex_none()
       .min_w(0)
-      .gap(5)
+      .gap(SEG_GAP)
       .items_center()
-      .text_size(11.5)
-      .text_color(t.dim)
-      .when(Boolean(repo), (el) => el.child(div().min_w(0).truncate().child(repo)))
-      .when(Boolean(g.branch), (el) => el.child(h_flex().flex_none().min_w(0).gap(4).items_center()
-        .child(svg("mods/workspace-chrome/git-branch.svg").size(11).flex_none().text_color(t.dim))
-        .child(div().min_w(0).max_w(110).truncate().text_color(t.dim).child(g.branch))
-        .when(Boolean(remote), branch => branch
-          .child(div().flex_none().text_color(t.dim).child("\u25b8"))
-          .child(div().min_w(0).max_w(80).truncate().text_color(t.dim).child(remote)))))
-      .when(g.ahead > 0, (el) => el.child(div().flex_none().text_color(t.ansi2).child(`\u2191${g.ahead}`)))
-      .when(g.behind > 0, (el) => el.child(div().flex_none().text_color(t.ansi1).child(`\u2193${g.behind}`)));
+      .children(kept.map((p, i) => div().flex_none().truncate().w(widths[i] * GLYPH)
+        .text_size(p.size ?? 11.5).text_color(p.color).child(p.text)));
   }
 
   row({ w, i, g, tree }, t) {
     const on = w.active;
     const px = find(layout(), "sidebar")?.size?.px ?? Infinity;
+    // Everything the row shows up to the status slot and the folder icon.
+    const room = Math.max(0, px - (tree ? 118 : 96));
+    const remote = g?.upstream?.includes("/") ? `\u25b8 ${g.upstream.slice(0, g.upstream.indexOf("/"))}` : "";
+    // The tail reads as one segment, so the name keeps the larger share.
+    const tail = [
+      g?.branch,
+      remote,
+      g?.ahead > 0 ? `\u2191${g.ahead}` : "",
+      g?.behind > 0 ? `\u2193${g.behind}` : "",
+    ].filter(Boolean).join(" ");
+    const lines = this.nameLine([
+      { text: w.name, color: t.foreground, size: 13 },
+      ...(tail ? [{ text: tail, color: t.dim }] : []),
+    ], room);
     const fromIndex = this.pressed === null ? -1 : spaces().findIndex(s => s.id === this.pressed);
     return v_flex()
       .relative()
@@ -693,8 +726,7 @@ export default class Spaces extends View {
           .child(div().w(14).flex_none().flex().justify_center().when(Boolean(w.status), el => el.child(mark(w.status, t))))
           .when(Boolean(tree), el => el.pl(22).child(svg("mods/workspace-chrome/branch.svg").size(13).text_color(t.dim)))
           .when(!tree, el => el.child(svg("mods/workspace-chrome/folder.svg").size(16).flex_none().text_color(t.dim)))
-          .child(div().flex_shrink(px >= 240 ? 0 : 1).min_w(0).max_w(150).truncate().text_color(t.foreground).child(w.name))
-          .when(g && px >= 200, el => el.child(this.gitTail(g, tree, w.name, t, px >= 300))),
+          .when(Boolean(lines), el => el.child(lines)),
       );
   }
 
