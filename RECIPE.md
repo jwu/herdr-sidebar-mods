@@ -46,8 +46,10 @@ agent's pane is in (its space when the pane has none), with the sub-agent fold
 count and an age that becomes a pin button on hover flush right. The second
 leads with a monitor icon for this computer or a server icon and the machine's
 name (`Local` here), then flush right that place's branch `▸` remote and
-`↑n`/`↓n`. The git tail is read with `git status --porcelain=v2 --branch` at
-most every 30s per folder, over `exec` on the agent's own machine. Sub-agent
+`↑n`/`↓n`. That tail keeps its remote from 300px of sidebar and disappears
+below 200px, leaving the machine its line. The git tail is read with
+`git status --porcelain=v2 --branch` at most every 30s per folder, over `exec`
+on the agent's own machine. Sub-agent
 rows are 26px, indented under tree lines. The selected agent row is the same
 magenta at 20%.
 
@@ -68,9 +70,12 @@ down shows a 2px accent line where it will land and moves it with
 `space.move`; worktrees reorder inside their main checkout's group only.
 Hovering a machine band tints it. The sidebar width drives the detail: at 260px
 and wider the sparkline and meter show; from 200px the graphics give way to a
-single 3px vertical gauge per reading; below 200px only the numbers remain;
-below 160px the whole panel falls back to the icon rail (numbers only, one
-letter cell per machine). Agents fold and unfold their sub-agents from the
+single 3px vertical gauge per reading; below 200px only the numbers remain, with
+the line tucked in under the icon so the shares still fit; below 160px the whole
+panel falls back to the icon rail (numbers only, one letter cell per machine).
+A space row's git tail keeps its remote from 300px and its branch from 200px,
+gone below that; the name gives way to it only under 240px, so at the usual
+width the name stays whole and the tail is a bare branch. Agents fold and unfold their sub-agents from the
 program icon, sort by priority or by space from the clock menu (remembered in
 the mod's shared state `agents.sort`), and pin an agent with the pin button
 that appears on hover (`terminal.pin`).

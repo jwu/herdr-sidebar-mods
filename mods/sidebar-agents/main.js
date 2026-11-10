@@ -15,7 +15,12 @@ function find(node, id) {
 }
 
 // The sidebar's rail goes by its width, not a flag: dragging its edge narrows it too.
-const narrow = () => (find(layout(), "sidebar")?.size?.px ?? Infinity) < 160;
+const sidebarPx = () => find(layout(), "sidebar")?.size?.px ?? Infinity;
+const narrow = () => sidebarPx() < 160;
+// Below this the git tail gives up its remote, then itself, the way the spaces
+// panel drops the sparkline and then the meters.
+const TAIL_SHORT = 300;
+const TAIL_HIDDEN = 200;
 
 // To the rail (on macOS wide enough for the traffic lights), or back to the width it had.
 function toggleSidebar() {
@@ -163,8 +168,8 @@ export default class Agents extends View {
 
   // A row's git tail, as the spaces panel draws one: branch, `▸` and the remote
   // it tracks, then ahead and behind.
-  gitTail(g, t) {
-    const remote = g.upstream?.includes("/") ? g.upstream.slice(0, g.upstream.indexOf("/")) : "";
+  gitTail(g, t, full = true) {
+    const remote = full && g.upstream?.includes("/") ? g.upstream.slice(0, g.upstream.indexOf("/")) : "";
     return h_flex()
       .min_w(0)
       .flex_none()
@@ -320,6 +325,7 @@ export default class Agents extends View {
     const t = theme();
     if (props()?.sortMenu) return this.sortMenu(t);
     const collapsed = narrow();
+    const px = sidebarPx();
     const sort = sortOf();
     let list = agents();
     this.listed = new Map(list.map((a) => [a.address, a.status]));
@@ -467,7 +473,7 @@ export default class Agents extends View {
             .child(h_flex().flex_1().min_w(0).gap(4).items_center().text_size(11).text_color(t.dim)
               .child(svg(`mods/workspace-chrome/${machine ? "server" : "monitor"}.svg`).size(12).flex_none().text_color(t.dim))
               .child(div().min_w(0).truncate().child(machine ?? "Local")))
-            .when(Boolean(g), (el) => el.child(div().flex_none().max_w(110).min_w(0).child(this.gitTail(g, t))))));
+            .when(Boolean(g) && px >= TAIL_HIDDEN, (el) => el.child(div().flex_none().max_w(110).min_w(0).child(this.gitTail(g, t, px >= TAIL_SHORT))))));
     };
 
     // Groups in list order: spaces (grouped) or priority sections. Agents of a

@@ -267,6 +267,8 @@ export default class Spaces extends View {
     const hist = live ? this.history[key] ?? [] : [];
     const width = find(layout(), "sidebar")?.size?.px ?? Infinity;
     const graphs = width >= 260 ? "full" : width >= 200 ? "gauge" : "none";
+    // Numbers only, and not much room for them: tuck the line in under the icon.
+    const tight = graphs === "none";
     const stale = s.stale === true;
     const tone = (v, warn) => (v >= 90 ? t.ansi1 : v >= warn ? t.ansi3 : stale ? t.muted : t.foreground);
     const share = (v, warn) => div().flex_none().min_w(28).flex().justify_end()
@@ -286,7 +288,7 @@ export default class Spaces extends View {
     const gauge = (v, warn) => div().w(3).h(GRAPH_H).flex_none().flex().flex_col().justify_end()
       .rounded(1).overflow_hidden().bg(t.input)
       .child(div().w_full().h(Math.max(1, Math.round(((v ?? 0) / 100) * GRAPH_H))).bg(tone(v ?? 0, warn)));
-    return h_flex().pl(21).gap(10).items_center().overflow_hidden().text_size(11).text_color(t.muted)
+    return h_flex().pl(tight ? 8 : 21).gap(tight ? 6 : 10).items_center().overflow_hidden().text_size(11).text_color(t.muted)
       .child(h_flex().flex_none().gap(5).items_center().child("CPU")
         .when(graphs === "full", el => el.child(spark))
         .when(graphs === "gauge", el => el.child(gauge(s.cpu, CPU_WARN)))
@@ -529,15 +531,16 @@ export default class Spaces extends View {
       const connected = !m || machine?.state === "connected";
       const rebuilt = this.rebuilt(machine) || !!repair;
       const folded = this.folded.has(m);
-      const icon = svg(`mods/workspace-chrome/${m ? "server" : "monitor"}.svg`).size(14).flex_none().text_color(t.muted);
-      const badge = div().absolute().right(-3).bottom(-2).size(6).rounded(3).border_1().border_color(t.chrome).bg(connected ? t.ansi2 : t.muted);
+      // Elements are single-use: the rail and the wide head each build their own.
+      const icon = () => svg(`mods/workspace-chrome/${m ? "server" : "monitor"}.svg`).size(14).flex_none().text_color(t.muted);
+      const badge = () => div().absolute().right(-3).bottom(-2).size(6).rounded(3).border_1().border_color(t.chrome).bg(connected ? t.ansi2 : t.muted);
       const toggle = (cx) => {
         folded ? this.folded.delete(m) : this.folded.add(m);
         localStorage.setItem("machines.folded", JSON.stringify([...this.folded]));
         cx.notify();
       };
       const row1 = h_flex().gap(7).items_center()
-        .child(icon)
+        .child(icon())
         .child(div().flex_1().truncate().child(m ?? "Local"))
         .when(!connected && !rebuilt, el => el.child(div().flex_none().child((machine?.state ?? "asleep").replace(/_/g, " "))))
         .when(rebuilt, el => el.child(h_flex().flex_none().gap(3).items_center()
@@ -586,7 +589,7 @@ export default class Spaces extends View {
           .cursor_pointer().hover(s => s.bg(t.hover))
           .when(this.machinePress?.m === m && carrying, (el) => el.opacity(0.5))
           .when(carrying && this.machineOver?.m === m, (el) => el.child(drop()))
-          .child(div().relative().flex_none().child(icon).when(Boolean(m), el => el.child(badge))))
+          .child(div().relative().flex_none().child(icon()).when(Boolean(m), el => el.child(badge()))))
         : drag(v_flex().id(`machine-${m ?? "local"}`).relative().flex_none().mt(4).mb(1).pl(collapsed ? 0 : 18).pr(collapsed ? 0 : 10).pt(5).pb(6).bg(t.surface)
           .text_size(13.5).font_medium().text_color(connected ? t.foreground : t.muted)
           .cursor_pointer().hover(s => s.bg(t.hover))
@@ -613,15 +616,13 @@ export default class Spaces extends View {
   // The git tail: the space's branch and the remote it tracks (dev \u25b8 origin,
   // purple as a branch reads), ahead/behind counts, and the repo when it is not
   // what the space is called.
-  gitTail(g, tree, name, t) {
+  gitTail(g, tree, name, t, full = true) {
     const same = (a) => a.toLowerCase() === name.toLowerCase();
     const repo = tree || same(g.name) ? "" : g.name;
-    const remote = g.upstream?.includes("/") ? g.upstream.slice(0, g.upstream.indexOf("/")) : "";
+    const remote = full && g.upstream?.includes("/") ? g.upstream.slice(0, g.upstream.indexOf("/")) : "";
     return h_flex()
-      .flex_1()
       .min_w(0)
       .gap(5)
-      .justify_end()
       .items_center()
       .text_size(11.5)
       .text_color(t.dim)
@@ -638,6 +639,7 @@ export default class Spaces extends View {
 
   row({ w, i, g, tree }, t) {
     const on = w.active;
+    const px = find(layout(), "sidebar")?.size?.px ?? Infinity;
     const fromIndex = this.pressed === null ? -1 : spaces().findIndex(s => s.id === this.pressed);
     return v_flex()
       .relative()
@@ -684,13 +686,15 @@ export default class Spaces extends View {
       .on_mouse_down("right", () => this.menu(w))
       .child(
         h_flex()
+          .w_full()
+          .min_w(0)
           .gap(9)
           .items_center()
           .child(div().w(14).flex_none().flex().justify_center().when(Boolean(w.status), el => el.child(mark(w.status, t))))
           .when(Boolean(tree), el => el.pl(22).child(svg("mods/workspace-chrome/branch.svg").size(13).text_color(t.dim)))
           .when(!tree, el => el.child(svg("mods/workspace-chrome/folder.svg").size(16).flex_none().text_color(t.dim)))
-          .child(div().flex_shrink(0).max_w(150).truncate().text_color(t.foreground).child(w.name))
-          .child(g ? this.gitTail(g, tree, w.name, t) : div().flex_1()),
+          .child(div().flex_shrink(px >= 240 ? 0 : 1).min_w(0).max_w(150).truncate().text_color(t.foreground).child(w.name))
+          .when(g && px >= 200, el => el.child(this.gitTail(g, tree, w.name, t, px >= 300))),
       );
   }
 
