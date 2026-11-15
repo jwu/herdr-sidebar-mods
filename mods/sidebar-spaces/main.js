@@ -6,7 +6,8 @@
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { spaces, machines, panes, run, openOverlay, exec, hc, theme, shared, setShared, watchFolder, window, layout, nextCommand } from "herdr";
+import * as fs from "fs/promises";
+import { spaces, machines, panes, run, openOverlay, exec, hc, appHome, theme, shared, setShared, watchFolder, window, layout, nextCommand } from "herdr";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -82,6 +83,48 @@ const hostOf = (target) => {
 // Changes made outside Herdr (an editor's save, a commit in another app): looked
 // for this often, in repos the list shows, while the window is in front.
 const FALLBACK = 60000;
+
+// The Local header's coffee cup: `caffeinate` holds the power assertion, as
+// Sheprd's status-bar cup holds one through `keepawake`. The pid lives in a
+// file in the app folder, so a reloaded mod takes the same hold back instead of
+// starting a second cup; `-w` ties the hold to the window's process, so
+// quitting Herdr lets go. Only macOS has `caffeinate`.
+const CUP_PID = "sidebar-spaces.caffeine.pid";
+// A cup nobody clicked off: checked this often, so one killed by hand shows off.
+const CUP_VERIFY = 5000;
+const shellQuote = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
+// Start the hold: `-d -i` like Sheprd (display and idle, no lid override), then
+// the pid of the window, found up the process tree past herdr-core helpers.
+const CUP_START = (file) => [
+  `f=${shellQuote(file)}`,
+  'mkdir -p "$(dirname "$f")"',
+  'p=$$',
+  'while [ "$p" -gt 1 ]; do',
+  '  c=$(ps -o comm= -p "$p" 2>/dev/null)',
+  '  case "$c" in',
+  '    */herdr-core|*/hc|herdr-core|hc) ;;',
+  '    *Herdr*|*herdr-app*) break ;;',
+  '  esac',
+  '  p=$(ps -o ppid= -p "$p" 2>/dev/null | tr -d " ")',
+  '  p=${p:-1}',
+  'done',
+  'if [ "$p" -gt 1 ]; then',
+  '  caffeinate -d -i -w "$p" </dev/null >/dev/null 2>&1 &',
+  'else',
+  '  caffeinate -d -i </dev/null >/dev/null 2>&1 &',
+  'fi',
+  'echo $! > "$f"',
+].join("\n");
+const CUP_STOP = (file, pid) => [
+  `f=${shellQuote(file)}`,
+  'p=$(cat "$f" 2>/dev/null)',
+  `[ -n "$p" ] || p=${Number.isInteger(pid) ? pid : ""}`,
+  '[ -n "$p" ] && kill "$p" 2>/dev/null',
+  'rm -f "$f"',
+  'exit 0',
+].join("\n");
+// A pid that is still the `caffeinate` this mod started, not a reused one.
+const CUP_ALIVE = (pid) => `kill -0 ${pid} 2>/dev/null && ps -o comm= -p ${pid} 2>/dev/null`;
 
 // The second line under a machine's name: CPU and memory, read from that
 // machine's own shell. Linux counters are compared with the previous reading;
@@ -225,6 +268,17 @@ export default class Spaces extends View {
     });
     this.refreshMachines(cx);
     cx.timer.every(15000, cx => this.refreshMachines(cx));
+    // The Local header's cup, and the file that says which hold it shows.
+    this.cup = "off"; // "off" | "on" | "busy"
+    this.cupPid = null;
+    this.cupHere = false; // decided by `caffeinate` being there, not by a platform name
+    this.cupFile = `${appHome()}/${CUP_PID}`;
+    cx.spawn(async (cx) => {
+      try { this.cupHere = (await exec("sh", ["-c", "command -v caffeinate"])).code === 0; } catch {}
+      if (this.cupHere) await this.syncCup(cx);
+      cx.notify();
+    });
+    cx.timer.every(CUP_VERIFY, (cx) => this.verifyCup(cx));
     cx.timer.every(2000, cx => { this.refreshStats(cx); this.refreshPorts(cx); });
     // `git status` walks the whole tree, on another machine a process there:
     // only when its answer could have changed (see `due`).
@@ -436,6 +490,51 @@ export default class Spaces extends View {
       if (hist.length > HISTORY) hist.shift();
     }
     this.stats[key] = { cpu, mem, cores, stale: false, at: Date.now() };
+  }
+
+  // --- the Local machine's coffee cup -------------------------------------
+
+  async cupPidAlive(pid) {
+    if (!Number.isInteger(pid) || pid <= 0) return false;
+    try {
+      const r = await exec("sh", ["-c", CUP_ALIVE(pid)]);
+      return r.code === 0 && /caffeinate/.test(r.stdout);
+    } catch { return false; }
+  }
+
+  // The cup as it is now: the hold named by the pid file if it still runs, else
+  // off. A reloaded mod, or a cup killed elsewhere, comes back right here.
+  async syncCup(cx) {
+    let pid = null;
+    try { pid = Number((await fs.readFile(this.cupFile, "utf8")).trim()); } catch {}
+    const held = await this.cupPidAlive(pid);
+    this.cupPid = held ? pid : null;
+    this.cup = held ? "on" : "off";
+    if (!held) await fs.unlink(this.cupFile).catch(() => {});
+    cx.notify();
+  }
+
+  toggleCup(cx) {
+    if (this.cup === "busy") return;
+    const held = this.cup === "on";
+    this.cup = "busy";
+    cx.notify();
+    cx.spawn(async (cx) => {
+      try {
+        await exec("sh", ["-c", held ? CUP_STOP(this.cupFile, this.cupPid) : CUP_START(this.cupFile)]);
+      } catch {}
+      await this.syncCup(cx);
+    });
+  }
+
+  // A cup left on: `caffeinate` gone (killed, or quit without `-w` taking it)
+  // means off, and the file goes with it.
+  verifyCup(cx) {
+    if (this.cup !== "on" || !this.cupPid) return;
+    cx.spawn(async (cx) => {
+      if (await this.cupPidAlive(this.cupPid)) return;
+      await this.syncCup(cx);
+    });
   }
 
   // CPU and memory shares under a machine's name, as Sheprd's host rows:
@@ -727,9 +826,23 @@ export default class Spaces extends View {
         localStorage.setItem("machines.folded", JSON.stringify([...this.folded]));
         cx.notify();
       };
+      // The Local header's cup, as Sheprd's status bar: a full cup holds this
+      // Mac awake with `caffeinate`, an empty one lets it sleep. Only this
+      // computer has one; a remote machine's hold would need that machine.
+      const cup = () => div().id("machine-cup-local").flex_none().size(18).flex().items_center().justify_center()
+        .rounded(4).cursor_pointer().hover(s => s.bg(t.hover))
+        .tooltip(this.cup === "on" ? "Keeping this Mac awake \u00b7 click to let it sleep"
+          : this.cup === "busy" ? "Changing the keep-awake hold\u2026"
+          : "Keep this Mac awake (caffeinate)")
+        .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+        .on_click((_e, cx) => { cx.stop_propagation(); this.toggleCup(cx); })
+        .child(svg(`mods/sidebar-spaces/${this.cup === "on" ? "coffee-full" : "coffee"}.svg`)
+          .size(13).text_color(this.cup === "on" ? t.ansi3 : this.cup === "busy" ? t.dim : t.muted));
       const row1 = h_flex().gap(7).items_center()
         .child(icon())
-        .child(div().flex_1().truncate().child(m ?? "Local"))
+        .child(div().flex_1().min_w_0().flex().items_center().gap(6)
+          .child(div().min_w_0().truncate().child(m ?? "Local"))
+          .when(m === null && this.cupHere, el => el.child(cup())))
         .when(!connected && !rebuilt, el => el.child(div().flex_none().child((machine?.state ?? "asleep").replace(/_/g, " "))))
         .when(rebuilt, el => el.child(h_flex().flex_none().gap(3).items_center()
           .child(div().max_w(140).truncate().child(repair?.error || "rebuilt ·"))
@@ -777,7 +890,8 @@ export default class Spaces extends View {
           .cursor_pointer().hover(s => s.bg(t.hover))
           .when(this.machinePress?.m === m && carrying, (el) => el.opacity(0.5))
           .when(carrying && this.machineOver?.m === m, (el) => el.child(drop()))
-          .child(div().relative().flex_none().child(icon()).when(Boolean(m), el => el.child(badge()))))
+          .child(div().relative().flex_none().child(icon()).when(Boolean(m), el => el.child(badge()))
+            .when(m === null && this.cup === "on", el => el.child(div().absolute().right(-3).bottom(-2).size(6).rounded(3).border_1().border_color(t.surface).bg(t.ansi3)))))
         : drag(v_flex().id(`machine-${m ?? "local"}`).relative().flex_none().mt(4).mb(1).pl(collapsed ? 0 : 18).pr(collapsed ? 0 : 10).pt(5).pb(6).bg(t.surface)
           .text_size(13.5).font_medium().text_color(connected ? t.foreground : t.muted)
           .cursor_pointer().hover(s => s.bg(t.hover))

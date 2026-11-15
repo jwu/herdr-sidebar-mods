@@ -10,7 +10,7 @@ space, agent state icons in front of each row, and a quieter purple selection.
 
 | Mod | Replaces | What it adds |
 | --- | --- | --- |
-| `sidebar-spaces` | the shipped `spaces` mod | full-width machine headers with a CPU sparkline and a memory meter (drag one onto another to reorder the machines; ctrl-1..9 can follow that order), a branch ▸ remote tail per space, a dim line of listening ports (`:3000 \| :5173`) under the space whose terminal started them, state icons, 2px row gaps |
+| `sidebar-spaces` | the shipped `spaces` mod | full-width machine headers with a CPU sparkline and a memory meter (drag one onto another to reorder the machines; ctrl-1..9 can follow that order), a branch ▸ remote tail per space, a dim line of listening ports (`:3000 \| :5173`) under the space whose terminal started them, state icons, a coffee cup on the **Local** header that keeps this Mac awake, 2px row gaps |
 | `sidebar-agents` | the shipped `agents` mod | two-line rows — folder, machine and that place's git tail on the first, then the program icon and title — state icon first in every row, 2px row gaps, the same purple selection and 4px corners |
 
 They are meant to be used together, but each works on its own.
@@ -57,6 +57,23 @@ behaviour):
 
 `herdr-app check` and `herdr-app do sidebar-spaces.pick5` work without it; the
 binding only changes what a keypress reaches.
+
+### Keeping this Mac awake
+
+The coffee cup on the **Local** header holds this computer awake with
+`caffeinate -d -i`, the way Sheprd's status-bar cup holds a power assertion: a
+filled cup keeps the display on and stops idle sleep, and clicking it again lets
+go. A closed lid still sleeps. The button is on this computer only (a remote
+machine would need a hold started there) and only where `caffeinate` exists; the
+rail, with room for one control per header, shows a small dot while the cup is
+full instead of the button.
+
+The hold is one `caffeinate` process named in
+`~/.config/herdr-app/sidebar-spaces.caffeine.pid`. That file lets a reloaded mod
+take the same cup back instead of starting a second one, and `-w <herdr pid>`
+ties the hold to the window's process, so quitting Herdr lets go even when the
+mod's own cleanup never ran. A cup killed by hand shows empty within five
+seconds.
 
 ## Requirements
 
