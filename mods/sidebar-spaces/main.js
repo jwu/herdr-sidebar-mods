@@ -5,9 +5,9 @@
 // switch, right-click for its menu, drag to reorder.
 
 import { View, div, svg } from "gpui-kit";
-import { v_flex, h_flex } from "gpui-base";
+import { v_flex, h_flex, ScrollHandle } from "gpui-base";
 import * as fs from "fs/promises";
-import { spaces, machines, panes, run, openOverlay, exec, hc, appHome, theme, shared, setShared, watchFolder, window, layout, nextCommand } from "herdr";
+import { spaces, machines, panes, run, openOverlay, exec, hc, appHome, theme, shared, setShared, watchFolder, window, layout, nextCommand, checking } from "herdr";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -83,6 +83,8 @@ const hostOf = (target) => {
 // Changes made outside Herdr (an editor's save, a commit in another app): looked
 // for this often, in repos the list shows, while the window is in front.
 const FALLBACK = 60000;
+// Bound the work across machines; a slow repository must not hold up the list.
+const AT_ONCE = 6;
 
 // The Local header's coffee cup: `caffeinate` holds the power assertion, as
 // Sheprd's status-bar cup holds one through `keepawake`. The pid lives in a
@@ -231,16 +233,19 @@ export default class Spaces extends View {
     this.checked = {}; // where() -> when it was last looked at
     this.unsure = new Set(); // where()s git couldn't answer for (a machine away)
     this.pending = new Set(); // where()s to look at next
+    this.gitInFlight = new Set(); // places already being checked
     this.busy = {}; // pane -> an agent working or a program in front of its shell
     this.ready = {}; // machine -> its layout was readable at the last look
     this.at = {}; // space -> its where() at the last look
-    this.watching = new Set(); // local repos' git folders
+    this.watching = new Map(); // local repo -> its pending folder watch
     // Spaces made while this runs wait (at most a moment) for their git, so a
     // worktree appears under its repo instead of jumping there.
     this.shown = new Set(spaces().map((s) => s.id));
     this.born = {};
     this.pressed = null;
     this.over = null;
+    this.scroll = ScrollHandle.new();
+    this.activeAt = -1;
     this.machines = [];
     this.stats = {}; // machine -> { cpu, mem, cores }, percentages or null
     this.history = {}; // machine -> its last CPU shares, oldest first
@@ -250,14 +255,36 @@ export default class Spaces extends View {
     this.ports = {}; // machine "" -> { space -> [{ number, address }] }
     this.portAt = {}; // machine -> when its ports were last read
     this.portScan = new Set(); // machines a port scan is in flight for
-    this.reconnecting = JSON.parse(localStorage.getItem("machines.reconnecting") ?? "{}");
-    for (const state of Object.values(this.reconnecting)) state.busy = false;
-    this.folded = new Set(JSON.parse(localStorage.getItem("machines.folded") ?? "[]"));
+    try {
+      this.reconnecting = JSON.parse(localStorage.getItem("machines.reconnecting") ?? "{}");
+      if (!this.reconnecting || typeof this.reconnecting !== "object" || Array.isArray(this.reconnecting)) this.reconnecting = {};
+      for (const [name, state] of Object.entries(this.reconnecting)) {
+        const machine = state?.machine;
+        if (!state || typeof state !== "object" || Array.isArray(state) || machine?.name !== name || typeof machine.target !== "string") {
+          delete this.reconnecting[name];
+          continue;
+        }
+        state.busy = false;
+        if (typeof state.error !== "string") state.error = null;
+        if (typeof machine.state !== "string") delete machine.state;
+      }
+    } catch { this.reconnecting = {}; }
+    let folded;
+    try { folded = JSON.parse(localStorage.getItem("machines.folded") ?? "[]"); } catch {}
+    this.folded = new Set(Array.isArray(folded) ? folded.filter(m => m === null || typeof m === "string") : []);
     // The machine order the user dragged into place, by name (null is this one).
     // Machines it never lists keep the catalog's order after the arranged ones.
-    this.order = JSON.parse(localStorage.getItem("machines.order") ?? "[]");
+    let order;
+    try { order = JSON.parse(localStorage.getItem("machines.order") ?? "[]"); } catch {}
+    this.order = Array.isArray(order) ? [...new Set(order.filter(m => m === null || typeof m === "string"))] : [];
     this.machinePress = null; // { m } while a header's press may become a reorder
     this.machineOver = null; // { m } the header under the pointer
+    // Initialize render state even in a check, but never run helpers or touch files.
+    this.cup = "off"; // "off" | "on" | "busy"
+    this.cupPid = null;
+    this.cupHere = false;
+    this.cupFile = `${appHome()}/${CUP_PID}`;
+    if (checking()) return;
     // "pick1".."pick9" from keys.json: the panel's own row numbering, which the
     // machines dragged here can put out of step with `space.select`.
     cx.spawn(async () => {
@@ -268,11 +295,7 @@ export default class Spaces extends View {
     });
     this.refreshMachines(cx);
     cx.timer.every(15000, cx => this.refreshMachines(cx));
-    // The Local header's cup, and the file that says which hold it shows.
-    this.cup = "off"; // "off" | "on" | "busy"
-    this.cupPid = null;
-    this.cupHere = false; // decided by `caffeinate` being there, not by a platform name
-    this.cupFile = `${appHome()}/${CUP_PID}`;
+    // The Local header's cup is available wherever `caffeinate` exists.
     cx.spawn(async (cx) => {
       try { this.cupHere = (await exec("sh", ["-c", "command -v caffeinate"])).code === 0; } catch {}
       if (this.cupHere) await this.syncCup(cx);
@@ -302,6 +325,17 @@ export default class Spaces extends View {
     const at = {};
     for (const s of sp) at[s.id] = where(s, ps);
     const keys = new Set(Object.values(at).filter((k) => JSON.parse(k)[1]));
+    for (const k of Object.keys(this.git)) if (!keys.has(k)) {
+      delete this.git[k];
+      delete this.checked[k];
+      this.unsure.delete(k);
+    }
+    for (const k of this.pending) if (!keys.has(k)) this.pending.delete(k);
+    const repos = new Set(Object.values(this.git).filter(Boolean).map(g => g.repo));
+    for (const [repo, pending] of this.watching) if (!repos.has(JSON.stringify([null, repo]))) {
+      this.watching.delete(repo);
+      pending.cancel();
+    }
     const due = new Set([...keys].filter((k) => !(k in this.git)));
     for (const [id, k] of Object.entries(at)) if (this.at[id] && this.at[id] !== k && keys.has(k)) due.add(k);
     this.at = at;
@@ -628,19 +662,28 @@ export default class Spaces extends View {
 
   // One look at a time, each place once however often it was asked for meanwhile.
   refreshGit(keys, cx) {
-    for (const k of keys) this.pending.add(k);
+    for (const k of keys) if (!this.gitInFlight.has(k)) this.pending.add(k);
     if (this.refreshing) return;
     this.refreshing = true;
     cx.spawn(async (cx) => {
-      while (this.pending.size) {
-        const keys = [...this.pending];
-        this.pending.clear();
-        for (const key of keys) await this.check(key, cx);
+      try {
+        const done = await Promise.allSettled(Array.from({ length: AT_ONCE }, async () => {
+          while (this.pending.size) {
+            const key = this.pending.values().next().value;
+            this.pending.delete(key);
+            this.gitInFlight.add(key);
+            try { await this.check(key, cx); }
+            finally { this.gitInFlight.delete(key); }
+            cx.notify();
+          }
+        }));
+        // Even an unexpected failure must not release the pool while peers run.
+        const failed = done.find(d => d.status === "rejected");
+        if (failed) throw failed.reason;
+      } finally {
+        this.refreshing = false;
+        cx.notify();
       }
-      const used = new Set(Object.values(this.git).filter(Boolean).map((g) => JSON.parse(g.repo)).filter(([on]) => !on).map(([, repo]) => repo));
-      for (const repo of this.watching) if (!used.has(repo)) this.watching.delete(repo);
-      this.refreshing = false;
-      cx.notify();
     });
   }
 
@@ -655,16 +698,28 @@ export default class Spaces extends View {
       const r = await exec("git", ["--no-optional-locks", "-c", "core.fsmonitor=false", "status", "--porcelain=v2", "--branch"], { cwd, on });
       if (r.code !== 0) {
         // Only git's own "no" is remembered as no repo; anything else is asked again.
-        if (!/not a git repository/i.test(r.stderr)) this.unsure.add(key);
-        this.git[key] = null;
+        if (!/not a git repository/i.test(r.stderr)) {
+          this.unsure.add(key);
+          this.git[key] ??= null;
+        } else this.git[key] = null;
         return;
       }
       // The repo's own .git folder names it; a worktree's top differs from it.
       const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd, on });
       const common = await exec("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd, on });
-      const repo = common.stdout.trim();
+      if (top.code !== 0 || common.code !== 0) {
+        const failed = top.code !== 0 ? top : common;
+        if (/not a git repository/i.test(failed.stderr)) this.git[key] = null;
+        else {
+          this.git[key] ??= null;
+          this.unsure.add(key);
+        }
+        return;
+      }
+      // Strip only Git's final newline; a folder name may contain whitespace.
+      const repo = common.stdout.replace(/\n$/, "");
       const name = repo.endsWith("/.git") ? base(repo.slice(0, -5)) : base(repo).replace(/\.git$/, "");
-      const info = { name, branch: null, upstream: null, ahead: 0, behind: 0, dirty: 0, conflicts: 0, repo: JSON.stringify([on, repo]), linked: repo !== `${top.stdout.trim()}/.git` };
+      const info = { name, branch: null, upstream: null, ahead: 0, behind: 0, dirty: 0, conflicts: 0, repo: JSON.stringify([on, repo]), linked: repo !== `${top.stdout.replace(/\n$/, "")}/.git` };
       for (const line of r.stdout.split("\n")) {
         if (line.startsWith("# branch.head ")) info.branch = line.slice(14);
         else if (line.startsWith("# branch.upstream ")) info.upstream = line.slice(18);
@@ -688,15 +743,23 @@ export default class Spaces extends View {
 
   watch(repo, cx) {
     if (this.watching.has(repo)) return;
-    this.watching.add(repo);
+    const pending = watchFolder(repo);
+    this.watching.set(repo, pending);
     cx.spawn(async (cx) => {
+      let current = pending;
       try {
-        while (this.watching.has(repo)) {
-          await watchFolder(repo);
+        for (;;) {
+          await current;
+          if (this.watching.get(repo) !== current) return;
           const mine = JSON.stringify([null, repo]);
-          if (this.watching.has(repo)) this.refreshGit(Object.keys(this.git).filter((k) => this.git[k]?.repo === mine), cx);
+          const keys = Object.keys(this.git).filter(k => this.git[k]?.repo === mine);
+          if (!keys.length) break;
+          this.refreshGit(keys, cx);
+          current = watchFolder(repo);
+          this.watching.set(repo, current);
         }
-      } catch { this.watching.delete(repo); }
+      } catch {}
+      if (this.watching.get(repo) === current) this.watching.delete(repo);
     });
   }
 
@@ -738,7 +801,7 @@ export default class Spaces extends View {
     const key = JSON.stringify([order, target, machines()]);
     if (order.every((id, i) => id === target[i])) {
       this.ordering = null;
-    } else if (this.ordering?.key !== key || this.orderingDue(Date.now())) {
+    } else if (!checking() && (this.ordering?.key !== key || this.orderingDue(Date.now()))) {
       const moved = new Set();
       this.ordering = { key, at: Date.now(), machines: [] };
       for (let i = 0; i < out.length; i++) {
@@ -799,6 +862,8 @@ export default class Spaces extends View {
   // alone, so a single-machine panel keeps showing its load.
   grouped(t, collapsed) {
     const rows = this.ordered();
+    this.activeAt = -1;
+    let before = 0; // direct children before this machine, including guidance rows
     // A space draws as its row and, under it, the ports its servers listen on;
     // both sit inside one selection box (see `spaceBox`).
     const draw = (r) => collapsed
@@ -817,11 +882,18 @@ export default class Spaces extends View {
       const machine = this.machines.find(k => k.name === m) ?? repair?.machine;
       const connected = !m || machine?.state === "connected";
       const rebuilt = this.rebuilt(machine) || !!repair;
+      const login = machine?.state === "needs_login" ? `hc machine login ${m}` : null;
       const folded = this.folded.has(m);
       // Elements are single-use: the rail and the wide head each build their own.
       const icon = () => svg(`mods/workspace-chrome/${m ? "server" : "monitor"}.svg`).size(14).flex_none().text_color(t.muted);
       const badge = () => div().absolute().right(-3).bottom(-2).size(6).rounded(3).border_1().border_color(t.chrome).bg(connected ? t.ansi2 : t.muted);
+      const warning = () => div().id(`machine-logout-${m}`).flex_none().text_color(t.blocked)
+        .tooltip("Agents stop when you disconnect. Click for the fix.")
+        .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+        .on_click((_e, cx) => { cx.stop_propagation(); openOverlay({ mod: "machine-add", kind: "dialog", width: 560 }); })
+        .child("⚠");
       const toggle = (cx) => {
+        if (collapsed && login) { run("app.settings", { section: "machines" }); return; }
         folded ? this.folded.delete(m) : this.folded.add(m);
         localStorage.setItem("machines.folded", JSON.stringify([...this.folded]));
         cx.notify();
@@ -843,7 +915,8 @@ export default class Spaces extends View {
         .child(div().flex_1().min_w_0().flex().items_center().gap(6)
           .child(div().min_w_0().truncate().child(m ?? "Local"))
           .when(m === null && this.cupHere, el => el.child(cup())))
-        .when(!connected && !rebuilt, el => el.child(div().flex_none().child((machine?.state ?? "asleep").replace(/_/g, " "))))
+        .when(machine?.keeps_running_after_logout === false, el => el.child(warning()))
+        .when(!connected && !rebuilt && !login, el => el.child(div().flex_none().child((machine?.state ?? "asleep").replace(/_/g, " "))))
         .when(rebuilt, el => el.child(h_flex().flex_none().gap(3).items_center()
           .child(div().max_w(140).truncate().child(repair?.error || "rebuilt ·"))
           .child(div().id(`machine-connect-${m}`).text_color(repair?.error ? t.blocked : t.muted)
@@ -886,12 +959,13 @@ export default class Spaces extends View {
         .on_mouse_up("left", (_e, cx) => release(cx));
       const head = collapsed
         ? drag(v_flex().id(`machine-${m ?? "local"}`).relative().flex_none().mt(4).w(RAIL_CELL).h(30).items_center().justify_center().rounded(4).bg(t.surface)
-          .tooltip(m ? `${m} · ${connected ? "connected" : (machine?.state ?? "asleep").replace(/_/g, " ")}` : "Local")
+          .tooltip(login ? `${m} needs a login: run ${login}. Click for Copy.` : m ? `${m} · ${connected ? "connected" : (machine?.state ?? "asleep").replace(/_/g, " ")}` : "Local")
           .cursor_pointer().hover(s => s.bg(t.hover))
           .when(this.machinePress?.m === m && carrying, (el) => el.opacity(0.5))
           .when(carrying && this.machineOver?.m === m, (el) => el.child(drop()))
           .child(div().relative().flex_none().child(icon()).when(Boolean(m), el => el.child(badge()))
-            .when(m === null && this.cup === "on", el => el.child(div().absolute().right(-3).bottom(-2).size(6).rounded(3).border_1().border_color(t.surface).bg(t.ansi3)))))
+            .when(m === null && this.cup === "on", el => el.child(div().absolute().right(-3).bottom(-2).size(6).rounded(3).border_1().border_color(t.surface).bg(t.ansi3))))
+          .when(machine?.keeps_running_after_logout === false, el => el.child(warning())))
         : drag(v_flex().id(`machine-${m ?? "local"}`).relative().flex_none().mt(4).mb(1).pl(collapsed ? 0 : 18).pr(collapsed ? 0 : 10).pt(5).pb(6).bg(t.surface)
           .text_size(13.5).font_medium().text_color(connected ? t.foreground : t.muted)
           .cursor_pointer().hover(s => s.bg(t.hover))
@@ -906,9 +980,21 @@ export default class Spaces extends View {
           .child(h_flex().size(18).rounded(5).border_1().border_color(t.dim).items_center().justify_center()
             .child(svg("mods/workspace-chrome/plus.svg").size(10))))
         .when(!collapsed, el => el.child(svg("mods/workspace-chrome/plus.svg").size(12)).child("New space there"));
-      if (!collapsed && rebuilt) return [head];
+      if (!collapsed && rebuilt) { before++; return [head]; }
       const cell = collapsed ? railCell : (el) => el;
-      return [cell(head), ...(folded ? [] : mine.length ? mine.flatMap(draw) : [loading(m) ? loadingRow(m) : cell(empty)])];
+      const guidance = !collapsed && login ? [v_flex().pl(20).pr(8).pb(6).gap(3).flex_none()
+        .child(div().text_size(11).text_color(t.blocked).child("needs a login: run"))
+        .child(h_flex().gap(5).items_center()
+          .child(div().flex_1().min_w(0).truncate().tooltip(login).text_size(11).text_color(t.muted).child(login))
+          .child(div().id(`machine-login-copy-${m}`).flex_none().px(5).py(2).rounded(4)
+            .text_size(11).text_color(t.foreground).bg(t.raised).cursor_pointer().hover(s => s.bg(t.hover))
+            .on_click((_e, cx) => { cx.stop_propagation(); cx.write_to_clipboard(login); this.copiedLogin = login; cx.notify(); })
+            .child(this.copiedLogin === login ? "Copied" : "Copy")))] : [];
+      const items = [cell(head), ...guidance, ...(folded ? [] : mine.length ? mine.flatMap(draw) : [loading(m) ? loadingRow(m) : cell(empty)])];
+      const first = folded ? -1 : mine.findIndex(r => r.w.active);
+      if (first >= 0) this.activeAt = before + 1 + guidance.length + first;
+      before += items.length;
+      return items;
     });
   }
 
@@ -1129,15 +1215,23 @@ export default class Spaces extends View {
       kept[p.id] = palette.reduce((best, c) => uses(c) < uses(best) ? c : best);
       changed = true;
     }
-    if (changed) setShared("space.colors", kept);
+    if (changed && !checking()) setShared("space.colors", kept);
+    const list = this.grouped(t, collapsed);
+    const active = sp.find(p => p.active)?.id;
+    if (active !== this.revealed || this.activeAt !== this.revealedAt) {
+      this.revealed = active;
+      this.revealedAt = this.activeAt;
+      if (this.activeAt >= 0) this.scroll.scroll_to_item(this.activeAt);
+    }
     return v_flex().size_full().min_h(0).bg(t.chrome).text_size(13)
       .child(h_flex().h(31).pl(16).pr(10).items_center().justify_between().text_size(11.5).text_color(t.dim)
         .when(collapsed, el => el.pl(0).pr(0).justify_center())
         .when(!collapsed, el => el.child("Spaces"))
         .child(div().id("space-new").size(26).flex_none().flex().items_center().justify_center().rounded(6).hover(s => s.bg(t.hover).text_color(t.foreground))
           .on_click(() => run("space.new")).child(svg("mods/workspace-chrome/plus.svg").size(14))))
-      .child(v_flex().flex_1().min_h(0).pb(14).overflow_y_scrollbar().mode("always")
+      .child(v_flex().flex_1().min_h(0).pb(14).overflow_y_scrollbar().mode("always").track_scroll(this.scroll)
+        .on_size_change((_size, cx) => { if (this.activeAt >= 0) { this.scroll.scroll_to_item(this.activeAt); cx.notify(); } })
         .on_mouse_up("left", (_e, cx) => { this.pressed = null; this.machinePress = null; this.machineOver = null; cx.notify(); })
-        .children(this.grouped(t, collapsed)));
+        .children(list));
   }
 }

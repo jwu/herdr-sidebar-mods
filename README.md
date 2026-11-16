@@ -15,6 +15,25 @@ space, agent state icons in front of each row, and a quieter purple selection.
 
 They are meant to be used together, but each works on its own.
 
+### Herdr 0.1.16 integration
+
+- Spaces scrolls the active row into view when the selection, displayed order,
+  or available height changes, including with a custom machine order.
+- Git checks use up to six concurrent places. Temporary failures keep the last
+  result and worktree grouping; leaving a repository releases its folder watch.
+- Machine headers show the official warning when agents would stop on logout,
+  and offer a copyable `hc machine login <name>` when login is needed. The logout
+  warning requires herdr-core 0.1.21 or newer on that machine.
+- On macOS, Agents sets the Dock badge to the number of agents that are blocked
+  **or done**, before grouping or folding. Zero clears it, and closing the panel
+  clears its badge. Other badge-setting mods share Herdr's last-writer-wins API.
+- Damaged saved panel state falls back safely. `herdr-app check` renders without
+  running helpers, starting timers, changing pins, or touching the caffeine PID.
+
+The existing purple selection, machine dragging, resource readings, port rows,
+agent sorting and pinning are unchanged. New-space buttons still create and
+select a space; no background-create gesture is added.
+
 ## Install
 
 ```sh
@@ -77,7 +96,7 @@ seconds.
 
 ## Requirements
 
-- Herdr app 0.1.14 or newer (`herdr-app --version`).
+- Herdr app 0.1.16 or newer (`herdr-app --version`).
 - A layout whose sidebar block has `"id": "sidebar"` (the shipped `main`
   layout does): both mods read its width to fall back to a compact rendering.
 - The machine headers sample each machine with a POSIX shell over `exec`; a
@@ -90,6 +109,17 @@ seconds.
   from your login shell — stays out of the list. A port on another machine
   copies `IP:PORT` (the host from that machine's ssh target) instead of opening
   a page, because there is no tunnel from this window.
+
+## Development checks
+
+```sh
+node --test tests/*.test.mjs
+herdr-app check mods/sidebar-spaces
+herdr-app check mods/sidebar-agents
+```
+
+The Node tests use mocked host APIs; the Herdr checks validate loading and
+rendering against the installed app. Checks also refresh the bundled type files.
 
 ## License
 

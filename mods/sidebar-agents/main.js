@@ -3,7 +3,7 @@
 
 import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { agents, terminals, panes, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout, exec } from "herdr";
+import { agents, terminals, panes, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout, exec, checking, setBadge } from "herdr";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -52,7 +52,8 @@ function toggleSidebar() {
   run("layout.resize", { id: "sidebar", px: narrow() ? (shared("sidebar.width") ?? 268) : window()?.platform === "macos" ? 76 : 44 });
 }
 
-const clean = (s) => (s ?? "").replace(/^[^\p{L}\p{N}]+/u, "").trim();
+// Keep opening brackets/quotes in real titles, but drop Codex's status prefix.
+const clean = (s) => (s ?? "").replace(/^[^\p{L}\p{N}\p{Ps}\p{Pi}]+/u, "").replace(/^\[ [!.] \] /, "").trim();
 
 function leadPanes(all) {
   const leads = new Map();
@@ -68,7 +69,9 @@ function leadPanes(all) {
 function title(tab, l) {
   const prog = l?.program?.name;
   const live = clean(l?.title);
-  const telling = live && live !== prog && !/^[~/]|^[A-Za-z]:\\/.test(live) && !live.includes("@") && live.toLowerCase() !== l?.program?.key;
+  // Test the original title: clean() strips a path's leading ~ or /.
+  const path = /^[~/]|^[A-Za-z]:\\/.test((l?.title ?? "").replace(/^[^\p{L}\p{N}~/]+/u, ""));
+  const telling = live && live !== (l?.terminal ?? l?.address) && live !== prog && !path && !live.includes("@") && live.toLowerCase() !== l?.program?.key;
   return (tab.name === prog || !tab.named) && telling ? live : tab.name;
 }
 const RANK = { blocked: 4, done: 3, working: 2, idle: 1 };
@@ -114,16 +117,35 @@ export default class Agents extends View {
     if (props()?.sortMenu) return;
     this.folded = new Set();
     // Each agent's last state and when it changed (ms), kept across restarts.
-    this.changed = JSON.parse(localStorage.getItem("changed") ?? "{}");
-    this.pendingPins = JSON.parse(localStorage.getItem("pins") ?? "[]");
-    if (!this.pendingPins.length) localStorage.removeItem("pins");
+    try { this.changed = JSON.parse(localStorage.getItem("changed") ?? "{}"); } catch { this.changed = {}; }
+    if (!this.changed || typeof this.changed !== "object" || Array.isArray(this.changed)) this.changed = {};
+    this.changed = Object.fromEntries(Object.entries(this.changed).filter(([, c]) => c && typeof c.s === "string" && Number.isFinite(c.at)));
+    try { this.pendingPins = JSON.parse(localStorage.getItem("pins") ?? "[]"); } catch { this.pendingPins = []; }
+    this.pendingPins = Array.isArray(this.pendingPins) ? this.pendingPins.filter(p => typeof p === "string") : [];
     this.migratingPins = new Set();
     this.git = {}; // gitKey() -> { branch, upstream, ahead, behind }, null: no repo / detached
     this.gitAt = {}; // gitKey() -> when it was last asked
     this.gitBusy = false;
+    if (checking()) return;
+    this.badgeOwner = true;
+    if (!this.pendingPins.length) localStorage.removeItem("pins");
     this.refreshGit(cx);
     cx.timer.every(5000, (cx) => this.refreshGit(cx));
     cx.timer.every(30000, (cx) => cx.notify());
+  }
+
+  close() {
+    if (this.badgeOwner) setBadge(null);
+  }
+
+  updateBadge(list) {
+    if (checking()) return;
+    // Count actual agents before grouping/folding, not the parent's promoted rank.
+    const count = list.filter(a => a.status === "blocked" || a.status === "done").length;
+    const badge = count ? String(count) : null;
+    if (badge === this.badge) return;
+    this.badge = badge;
+    setBadge(badge);
   }
 
   // Every place a listed agent works in: the machine it is on (null here) and
@@ -163,7 +185,8 @@ export default class Agents extends View {
           // Writes nothing under .git, like the spaces panel's look.
           const r = await exec("git", ["--no-optional-locks", "-c", "core.fsmonitor=false", "status", "--porcelain=v2", "--branch"], { cwd, on });
           if (r.code !== 0) {
-            this.git[key] = null;
+            if (/not a git repository/i.test(r.stderr)) this.git[key] = null;
+            else this.git[key] ??= null;
             continue;
           }
           const info = { branch: null, upstream: null, ahead: 0, behind: 0, dirty: 0, conflicts: 0 };
@@ -363,12 +386,13 @@ export default class Agents extends View {
     const px = sidebarPx();
     const sort = sortOf();
     let list = agents();
+    this.updateBadge(list);
     this.listed = new Map(list.map((a) => [a.address, a.status]));
     const all = terminals();
-    this.migratePins(all);
+    if (!checking()) this.migratePins(all);
     const shown = focused()?.agent;
     const now = Date.now();
-    this.track(list, now);
+    if (!checking()) this.track(list, now);
     this.hold(list);
     // A kept sub-agent (one with a pane) is in agents() too: where a tree shows
     // it, it gets no row of its own, unless it's pinned.
@@ -383,7 +407,7 @@ export default class Agents extends View {
     const pinned = list.filter((a) => a.pinned);
     const rest = list.filter((a) => !a.pinned);
     list = [...pinned, ...rest];
-    setAgentOrder(list.map((a) => a.address));
+    if (!checking()) setAgentOrder(list.map((a) => a.address));
 
     const withKids = (a, i) => {
       const subs = collapsed ? [] : this.tree(all, a.address);

@@ -95,14 +95,30 @@ its conflicts in red (`✘1`), and its ahead/behind counts in starship's green a
 red, each a fixed segment of its own. Agents fold and unfold their sub-agents from the
 program icon, sort by priority or by space from the clock menu (remembered in
 the mod's shared state `agents.sort`), and pin an agent with the pin button
-that appears on hover (`terminal.pin`).
+that appears on hover (`terminal.pin`). On macOS the Agents panel sets the Dock
+badge to the number of listed agents whose actual state is blocked or done,
+counted before grouping or folding (not the parent's promoted urgency). It writes
+only when the count changes, clears at zero and on panel close, and never lets
+the sort overlay own the badge. Other badge-setting mods share the same
+last-writer-wins API.
+
+The Spaces scroll area tracks a `ScrollHandle`: selecting a different space,
+changing its displayed index or resizing the list brings the active row into
+view. The direct-child index includes machine bands and login guidance, but
+not a space's ports line (it is inside the row's selection box). Folded rows
+have no scroll target. A remote machine that needs login offers its
+`hc machine login <name>` command with Copy; the rail opens Settings > Machines
+instead. A `keeps_running_after_logout: false` machine shows the shipped logout
+warning and opens the official machine-add dialog for the fix (core 0.1.21+).
 
 **Built from:** two mods, `sidebar-spaces` and `sidebar-agents`, each with a
 `main.js` and a `mod.json` (`{"place":"none","title":"Spaces"|"Agents"}`). Both
 import from `herdr`: `spaces`, `machines`, `panes`, `agents`, `terminals`,
 `focused`, `theme`, `shared`, `setShared`, `layout`, `window`, `run`, `exec`,
-`hc`, `openOverlay`, `closeOverlay`, `props`, `watchFolder`, `setAgentOrder`.
-From `gpui-kit`: `View`, `div`, `svg`, `h_flex`, `v_flex`. Commands called:
+`hc`, `openOverlay`, `closeOverlay`, `props`, `watchFolder`, `setAgentOrder`,
+`checking`, `setBadge`.
+From `gpui-kit`: `View`, `div`, `image`, `svg`; from `gpui-base`: `h_flex`,
+`v_flex`, `ScrollHandle`. Commands called:
 `space.select`, `space.new`, `space.move`, `pane.focus`, `terminal.peek`,
 `terminal.pin`, `agent.focus`. Drawings use the shipped `workspace-chrome` mod's
 SVGs (`monitor`, `server`, `folder`, `branch`, `git-branch`, `chevron-down`,
@@ -114,7 +130,12 @@ sampled every 5s with `exec("sh", ["-c", …], {on: machine})`: Linux reads
 the Linux path. The machine list is `hc machine ls --json` every 15s; git is
 `git --no-optional-locks status --porcelain=v2 --branch` plus `rev-parse` per
 space folder, refreshed when a terminal's command ends, a space moves, or a
-machine comes back, with local repos watched via `watchFolder`. Space colors
+machine comes back, with at most six places checked concurrently and local
+repos watched via `watchFolder`. In-flight checks are deduplicated. Temporary
+Git failures keep the previous answer; only an explicit not-a-repository answer
+clears it. Each successful `rev-parse` is checked before its output is used.
+Leaving a place drops its Git cache, and a local repository no longer shown has
+its pending watch cancelled; cancellation never restarts the watch. Space colors
 under `space.colors` stay maintained for the space picker. Listening ports are
 read the way Sheprd reads its sidebar: every 5s each connected machine runs
 `ss -ltnp` (else `lsof -nP -iTCP -sTCP:LISTEN`) in its own shell, and each
@@ -124,7 +145,14 @@ herdr-core, `HERDR_WORKSPACE_ID` from a Herdr pane — which `panes()` and
 neither is dropped rather than guessed at from a process tree or a working
 folder.
 
-**Watch out:** both mods assume the layout's sidebar node keeps `"id":
+**Watch out:** these mods require Herdr app 0.1.16 or newer. Both initialize
+render state before returning early from `init` when `checking()` is true:
+no helper commands, timers, file changes, pin migration or badge writes run in
+a check. Render-time shared writes and automatic space moves are also skipped.
+Malformed saved JSON and unexpected panel-state types fall back to empty state;
+valid machine order, folding, pins and agent timestamps are preserved.
+
+Both mods assume the layout's sidebar node keeps `"id":
 "sidebar"` — they read its width for the compact fallbacks, and without it the
 width reads as infinite (always full detail). They also reach into the shipped
 `workspace-chrome` mod for icons, so a renamed or removed icon path breaks
@@ -147,7 +175,8 @@ here — `hc` has no port forwarding — so a click copies the address instead. 
 line sits under the space and indents past its icons, so a space with servers
 is 18px taller than one without.
 
-**Done when:** `herdr-app check mods/sidebar-spaces` and `herdr-app check
+**Done when:** `node --test tests/*.test.mjs` passes, and
+`herdr-app check mods/sidebar-spaces` and `herdr-app check
 mods/sidebar-agents` both pass; a screenshot of the window shows a machine band
 with two lines (name, then `CPU ▁▂▃ 12%  MEM ━━─ 61%`), a space row with a
 state icon, folder, name and a purple `dev ▸ origin` tail, and an agent row
@@ -160,4 +189,7 @@ moves it; narrowing the sidebar below 260px swaps the sparkline and meter for
 gauges, and below 200px leaves numbers only; a server started in a space's
 terminal (`python3 -m http.server 8000`) lists `:8000` under that space within
 five seconds, clicking it opens it in the browser, and ending the server takes
-the number away.
+the number away. Switching to a space outside the visible scroll area reveals
+it in the custom machine order, and resizing keeps it visible. A blocked or done
+agent contributes one to the macOS Dock badge; clearing those states clears the
+badge. Checks emit no helper-command warnings and do not touch the caffeine PID.
