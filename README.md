@@ -19,8 +19,16 @@ They are meant to be used together, but each works on its own.
 
 - Spaces scrolls the active row into view when the selection, displayed order,
   or available height changes, including with a custom machine order.
-- Git checks use up to six concurrent places. Temporary failures keep the last
-  result and worktree grouping; leaving a repository releases its folder watch.
+- Spaces and Agents share Git results by machine and live folder, including
+  in-flight deduplication. Between worktree scans, lightweight ref reads update
+  branch, upstream and ahead/behind without walking the tree. Normal refresh is
+  30 seconds for refs and 60 seconds for dirty/conflict counts; a finished command
+  can refresh sooner. Spaces checks up to six places, Agents up to two.
+  Temporary failures keep the last result and worktree grouping; leaving a
+  repository releases its folder watch.
+- Agents scrolls the focused row into view, including sub-agents, pinned rows
+  and the compact rail. Navigating into a folded group unfolds it; folding the
+  current group manually stays respected until focus leaves and returns.
 - Machine headers show the official warning when agents would stop on logout,
   and offer a copyable `hc machine login <name>` when login is needed. The logout
   warning requires herdr-core 0.1.21 or newer on that machine.

@@ -50,9 +50,10 @@ leads with a monitor icon for this computer or a server icon and the machine's
 name (`Local` here), then flush right that place's branch `▸` remote and
 `↑n`/`↓n`, plus `*n` for files changed and `✘n` for conflicts, as on a space
 row. That line is budgeted the same way as a space row's: the machine
-keeps six glyphs before the tail gives up its share. The git tail is read with
-`git status --porcelain=v2 --branch` at most every 30s per folder, over `exec`
-on the agent's own machine. Sub-agent
+keeps six glyphs before the tail gives up its share. The git tail shares its
+machine-and-folder cache with Spaces: refs refresh every 30s, worktree scans
+for dirty/conflict counts every 60s, with earlier refresh after a command ends.
+Each command runs over `exec` on the agent's own machine. Sub-agent
 rows are 26px, indented under tree lines. The selected agent row is the same
 magenta at 20%.
 
@@ -106,7 +107,11 @@ The Spaces scroll area tracks a `ScrollHandle`: selecting a different space,
 changing its displayed index or resizing the list brings the active row into
 view. The direct-child index includes machine bands and login guidance, but
 not a space's ports line (it is inside the row's selection box). Folded rows
-have no scroll target. A remote machine that needs login offers its
+have no scroll target. Agents also tracks a `ScrollHandle`, counting group
+headers and sub-agent rows. New focus (including peek or an agent block) unfolds
+the target's group and parent, then reveals it. Unchanged focus does not undo a
+manual fold or reset manual scrolling; order and viewport changes reveal again.
+A remote machine that needs login offers its
 `hc machine login <name>` command with Copy; the rail opens Settings > Machines
 instead. A `keeps_running_after_logout: false` machine shows the shipped logout
 warning and opens the official machine-add dialog for the fix (core 0.1.21+).
@@ -127,15 +132,22 @@ SVGs (`monitor`, `server`, `folder`, `branch`, `git-branch`, `chevron-down`,
 sampled every 5s with `exec("sh", ["-c", …], {on: machine})`: Linux reads
 `/proc/stat` and `/proc/meminfo` (`MemAvailable`, else `MemFree`), macOS reads
 `vm_stat`, `hw.memsize` and sums `ps -A -o %cpu=`, and MINGW/MSYS machines use
-the Linux path. The machine list is `hc machine ls --json` every 15s; git is
-`git --no-optional-locks status --porcelain=v2 --branch` plus `rev-parse` per
-space folder, refreshed when a terminal's command ends, a space moves, or a
-machine comes back, with at most six places checked concurrently and local
-repos watched via `watchFolder`. In-flight checks are deduplicated. Temporary
-Git failures keep the previous answer; only an explicit not-a-repository answer
-clears it. Each successful `rev-parse` is checked before its output is used.
-Leaving a place drops its Git cache, and a local repository no longer shown has
-its pending watch cancelled; cancellation never restarts the watch. Space colors
+the Linux path. The machine list is `hc machine ls --json` every 15s. Both
+panels share Git results in `shared("sidebar.git.v1")`, keyed by machine and
+live folder. Short-lived claims deduplicate simultaneous looks and expire after
+reloads. Up to 64 recent results are shared for 15 minutes; visible places keep
+local scan ages even if evicted. Two separate `rev-parse` calls identify a repo
+without confusing newlines in paths; a full scan then uses
+`git --no-optional-locks -c core.fsmonitor=false status --porcelain=v2 --branch`.
+Between scans, `symbolic-ref`, upstream `rev-parse` and `rev-list` read refs
+without walking the worktree. Refs refresh every 30s, dirty/conflict counts every
+60s; a terminal's command ending, a folder move or a machine returning can scan
+sooner. Spaces checks up to six places, Agents two, with at most two execs per
+place and 20-second exec timeouts. Local repo `watchFolder` events refresh refs
+immediately. Temporary failures retain the previous answer and back off; only
+an explicit not-a-repository answer clears it. Leaving a place drops its local
+Git cache; a local repository no longer shown has its pending watch cancelled,
+and cancellation never restarts the watch. Space colors
 under `space.colors` stay maintained for the space picker. Listening ports are
 read the way Sheprd reads its sidebar: every 5s each connected machine runs
 `ss -ltnp` (else `lsof -nP -iTCP -sTCP:LISTEN`) in its own shell, and each
@@ -193,3 +205,6 @@ the number away. Switching to a space outside the visible scroll area reveals
 it in the custom machine order, and resizing keeps it visible. A blocked or done
 agent contributes one to the macOS Dock badge; clearing those states clears the
 badge. Checks emit no helper-command warnings and do not touch the caffeine PID.
+Agent navigation reveals a row outside the viewport and unfolds its parent/group
+only on new focus. Dragging a Space inside its machine block still reorders it,
+while an ordinary click keeps its old action.

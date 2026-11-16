@@ -2,7 +2,7 @@
 // A viewed done agent stays in Done until left.
 
 import { View, div, image, svg } from "gpui-kit";
-import { v_flex, h_flex } from "gpui-base";
+import { v_flex, h_flex, ScrollHandle } from "gpui-base";
 import { agents, terminals, panes, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout, exec, checking, setBadge } from "herdr";
 
 function find(node, id) {
@@ -100,10 +100,237 @@ function duration(ms) {
 // The folder an agent works in, by its last path segment (a Windows path too).
 const base = (path) => (path ?? "").replace(/[\\/]+$/, "").split(/[\\/]/).pop();
 
-// A row's second line reads its place's git: branch, the remote it tracks,
-// ahead/behind. Asked at most this often per place; changes on this machine
-// wake it sooner only when the space list does the same.
-const GIT_EVERY = 30000;
+// --- shared git cache: keep this block identical in both sidebar mods ---
+// The Spaces and Agents panels show the same places, so they keep one answer per
+// place in shared state, and one of them looks at a place while the other reads
+// what it found. A place is (machine, live folder), and the machine stays in the
+// key, so two machines' /repo never mix. A look either walks the worktree for
+// changed files or only reads the refs: on a big repository the walk is the
+// expensive part, and a folder watch or a finished command already says the refs
+// may have moved. Entries nobody looked at for a while go, and the store is
+// bounded, so it cannot grow with the window's history.
+const GIT_CACHE = "sidebar.git.v1";
+const GIT_OWNER = Math.random().toString(36).slice(2); // this copy, not the other panel
+const GIT_REFS_EVERY = 30000; // how stale branch, upstream and ahead/behind may get
+const GIT_DIRTY_EVERY = 60000; // how stale the worktree's changed files may get
+const GIT_STALE = 900000; // a place not looked at for a quarter of an hour is dropped
+const GIT_MAX = 64; // places kept in shared state
+const GIT_TIMEOUT = 20000; // one look at a place, then ask again later
+const GIT_LEASE = GIT_TIMEOUT * 2 + 5000; // both sequential exec phases can take their full timeout
+
+// Runs finished, not returned as they finish: a look is not over while one of
+// its runs still holds an exec slot, and a failure waits for its peers.
+async function allSettledValues(...runs) {
+  const done = await Promise.allSettled(runs);
+  const failed = done.find((d) => d.status === "rejected");
+  if (failed) throw failed.reason;
+  return done.map((d) => d.value);
+}
+
+// The store as read: a damaged or absent value is an empty one.
+function readGitStore() {
+  const store = shared(GIT_CACHE);
+  const part = (v) => (v && typeof v === "object" && !Array.isArray(v) ? v : {});
+  return { places: part(store?.places), leases: part(store?.leases) };
+}
+
+// One place's record, if it is one this panel can use: another copy's damaged
+// write is not this panel's answer.
+function gitRecordOf(r) {
+  if (!r || typeof r !== "object" || !Number.isFinite(r.at) || r.at <= 0) return null;
+  if (Date.now() - r.at > GIT_STALE) return null;
+  if (r.info !== null) {
+    const g = r.info;
+    if (!g || typeof g !== "object" || Array.isArray(g) || typeof g.name !== "string"
+      || (g.branch !== null && typeof g.branch !== "string")
+      || (g.upstream !== null && typeof g.upstream !== "string")
+      || !["ahead", "behind", "dirty", "conflicts"].every(k => Number.isFinite(g[k]) && g[k] >= 0)) return null;
+    try {
+      const repo = JSON.parse(g.repo);
+      if (!Array.isArray(repo) || repo.length !== 2 || (repo[0] !== null && typeof repo[0] !== "string") || typeof repo[1] !== "string") return null;
+    } catch { return null; }
+  }
+  return {
+    at: r.at,
+    refsAt: Number.isFinite(r.refsAt) ? r.refsAt : 0,
+    dirtyAt: Number.isFinite(r.dirtyAt) ? r.dirtyAt : 0,
+    info: r.info ?? null,
+    unsure: r.unsure === true,
+  };
+}
+
+function readGitRecord(key) {
+  return gitRecordOf(readGitStore().places[key]);
+}
+
+// Writes the store: places nobody looked at for a while and leases left behind
+// go. A check (`herdr-app check`) never writes.
+function writeGitStore(places, leases) {
+  if (checking()) return;
+  const now = Date.now();
+  const kept = {};
+  for (const [k, r] of Object.entries(places)) {
+    if (!r || typeof r !== "object" || !Number.isFinite(r.at) || now - r.at > GIT_STALE) continue;
+    kept[k] = r;
+  }
+  const newest = Object.entries(kept).sort((a, b) => b[1].at - a[1].at).slice(0, GIT_MAX);
+  const held = {};
+  for (const [k, l] of Object.entries(leases)) {
+    if (!l || typeof l !== "object" || !Number.isFinite(l.at) || now - l.at >= GIT_LEASE) continue;
+    held[k] = l;
+  }
+  setShared(GIT_CACHE, { places: Object.fromEntries(newest), leases: held });
+}
+
+// One place's answer, for the other panel to read; it also gives up this copy's
+// claim on the place.
+function publishGit(key, record) {
+  if (checking()) return record;
+  const { places, leases } = readGitStore();
+  record = { ...record, at: Date.now() };
+  places[key] = record;
+  delete leases[key];
+  writeGitStore(places, leases);
+  return record;
+}
+
+// Claims a place for the look about to run, so the other panel reads its answer
+// instead of running Git again. A claim older than a look is stale (that copy
+// reloaded or died), so it does not block.
+function claimGit(key) {
+  if (checking()) return true;
+  const { places, leases } = readGitStore();
+  const held = leases[key];
+  if (held && held.owner !== GIT_OWNER && Date.now() - (Number(held.at) || 0) < GIT_LEASE) return false;
+  leases[key] = { owner: GIT_OWNER, at: Date.now() };
+  writeGitStore(places, leases);
+  return true;
+}
+
+// The repo's own name: its .git folder names it, and a worktree's top differs.
+function gitRepoName(repo) {
+  const last = (path) => path.replace(/\/+$/, "").split("/").pop();
+  return repo.endsWith("/.git") ? last(repo.slice(0, -5)) : last(repo).replace(/\.git$/, "");
+}
+
+// A `status --porcelain=v2 --branch` answer: branch, upstream, ahead/behind and
+// the worktree's work — `1`/`2` changed or renamed, `?` untracked, `u` a conflict.
+function gitBranchInfo(stdout) {
+  const info = { branch: null, upstream: null, ahead: 0, behind: 0, dirty: 0, conflicts: 0 };
+  for (const line of stdout.split("\n")) {
+    if (line.startsWith("# branch.head ")) info.branch = line.slice(14);
+    else if (line.startsWith("# branch.upstream ")) info.upstream = line.slice(18);
+    else if (line.startsWith("# branch.ab ")) {
+      const [a, b] = line.slice(12).split(" ");
+      info.ahead = Math.abs(parseInt(a, 10)) || 0;
+      info.behind = Math.abs(parseInt(b, 10)) || 0;
+    } else if (line.startsWith("u ")) { info.dirty++; info.conflicts++; }
+    else if (/^[12?] /.test(line)) info.dirty++;
+  }
+  if (info.branch === "(detached)") info.branch = null;
+  return info;
+}
+
+// What Git answers when there is nothing unusual to report: a detached or unborn
+// HEAD, a branch without an upstream. Anything else (ssh, a folder gone) is a
+// look Git did not make, and the panel keeps what it showed.
+const GIT_NO_REF = /not a symbolic ref|does not point to a branch|not a git repository/i;
+const GIT_NO_UPSTREAM = /no upstream configured|no such branch|does not point to a branch|ambiguous argument|unknown revision|not a git repository/i;
+const gitNoRepo = (r) => r.code !== 0 && /not a git repository/i.test(r.stderr ?? "");
+const gitUnanswered = (r, quiet) => r.code !== 0 && !quiet.test(r.stderr ?? "")
+  && !(quiet === GIT_NO_REF && r.code === 1 && !(r.stderr ?? "").trim());
+
+// One place's git answer. `prev` is the record this panel already has; `walk`
+// asks for the worktree's changed files too, `force` reads the refs even when
+// they were read a moment ago (a folder watch or a finished command). `at`,
+// `refsAt` and `dirtyAt` say when each part was read; `unsure` marks an answer
+// Git would not give, so a panel keeps what it showed and asks again.
+async function checkGit(key, place, prev, { walk = false, force = false } = {}) {
+  const on = place.on ?? null;
+  const opts = { cwd: place.cwd, on, timeout: GIT_TIMEOUT };
+  const info = prev?.info ?? null;
+  const asked = Number(prev?.at) || 0;
+  const refsAt = Number(prev?.refsAt) || 0;
+  const dirtyAt = Number(prev?.dirtyAt) || 0;
+  const now = Date.now();
+  // Another panel answered while this place waited its turn: that is the answer.
+  const peer = readGitRecord(key);
+  if (peer && peer.at > asked && (!walk || peer.dirtyAt > dirtyAt)) return peer;
+  const full = walk || !info;
+  // The refs alone, and only when they could have moved since.
+  if (!full && !force && now - refsAt < GIT_REFS_EVERY) return prev;
+  if (!claimGit(key)) return prev; // the other panel is looking at it now
+  try {
+    if (!full) {
+      // A checkout, a commit or a fetch shows here without walking this
+      // repository's worktree.
+      const [ref, up] = await allSettledValues(
+        exec("git", ["symbolic-ref", "-q", "HEAD"], opts),
+        exec("git", ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], opts),
+      );
+      if (gitUnanswered(ref, GIT_NO_REF) || gitUnanswered(up, GIT_NO_UPSTREAM)) {
+        return publishGit(key, { at: now, refsAt, dirtyAt, info, unsure: true });
+      }
+      if (gitNoRepo(ref) || gitNoRepo(up)) {
+        return publishGit(key, { at: now, refsAt: now, dirtyAt: now, info: null, unsure: false });
+      }
+      // `HEAD...@{upstream}` counts ahead then behind; no upstream has nothing to count.
+      const counts = up.code === 0
+        ? await exec("git", ["rev-list", "--left-right", "--count", "HEAD...@{upstream}"], opts)
+        : null;
+      if (counts && gitUnanswered(counts, GIT_NO_UPSTREAM)) {
+        return publishGit(key, { at: now, refsAt, dirtyAt, info, unsure: true });
+      }
+      const branch = ref.code === 0 ? ref.stdout.trim().replace(/^refs\/heads\//, "") : "";
+      const upstream = up.code === 0 ? up.stdout.trim() || null : null;
+      const [ahead, behind] = counts?.code === 0
+        ? counts.stdout.trim().split(/\s+/).map((n) => Math.abs(parseInt(n, 10)) || 0)
+        : [0, 0];
+      return publishGit(key, {
+        at: now, refsAt: now, dirtyAt, unsure: false,
+        info: { ...info, branch: branch || null, upstream, ahead, behind },
+      });
+    }
+    // The walk: the repo's own folders, then the worktree. Two `rev-parse` runs
+    // because a folder name may itself contain a newline; `status` takes no
+    // optional locks and no fsmonitor cookie, so it writes nothing under .git and
+    // does not wake the folder watch the spaces panel keeps on the repository.
+    const [top, common] = await allSettledValues(
+      exec("git", ["rev-parse", "--path-format=absolute", "--show-toplevel"], opts),
+      exec("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], opts),
+    );
+    if (gitNoRepo(top) || gitNoRepo(common)) {
+      return publishGit(key, { at: now, refsAt: now, dirtyAt: now, info: null, unsure: false });
+    }
+    if (top.code !== 0 || common.code !== 0) {
+      // Git would not answer (a machine away, a folder it lost): keep the last.
+      return publishGit(key, { at: now, refsAt, dirtyAt, info, unsure: true });
+    }
+    const status = await exec("git", ["--no-optional-locks", "-c", "core.fsmonitor=false", "status", "--porcelain=v2", "--branch"], opts);
+    // Strip only Git's final newline: a folder name may contain whitespace.
+    const tree = top.stdout.replace(/\n$/, "");
+    const repo = common.stdout.replace(/\n$/, "");
+    if (gitNoRepo(status)) {
+      return publishGit(key, { at: now, refsAt: now, dirtyAt: now, info: null, unsure: false });
+    }
+    if (status.code !== 0 || !tree || !repo) {
+      return publishGit(key, { at: now, refsAt, dirtyAt, info, unsure: true });
+    }
+    return publishGit(key, {
+      at: now, refsAt: now, dirtyAt: now, unsure: false,
+      info: { ...gitBranchInfo(status.stdout), name: gitRepoName(repo), repo: JSON.stringify([on, repo]), linked: repo !== `${tree}/.git` },
+    });
+  } catch {
+    // Couldn't ask (the machine is away): keep what it showed, look again later.
+    return publishGit(key, { at: now, refsAt, dirtyAt, info, unsure: true });
+  }
+}
+// --- end shared git cache ---
+
+// A machine's core runs sixteen execs at once and the spaces panel may be using
+// six looks of two, so two places here keep a slow repository from crowding the
+// others out while leaving that room.
+const AT_ONCE = 2;
 const gitKey = (on, cwd) => JSON.stringify([on ?? null, cwd]);
 
 // The agent's icon from the app's program table: a one-color glyph or a picture.
@@ -116,6 +343,8 @@ export default class Agents extends View {
   init(_props, cx) {
     if (props()?.sortMenu) return;
     this.folded = new Set();
+    this.scroll = ScrollHandle.new();
+    this.activeAt = -1;
     // Each agent's last state and when it changed (ms), kept across restarts.
     try { this.changed = JSON.parse(localStorage.getItem("changed") ?? "{}"); } catch { this.changed = {}; }
     if (!this.changed || typeof this.changed !== "object" || Array.isArray(this.changed)) this.changed = {};
@@ -123,8 +352,9 @@ export default class Agents extends View {
     try { this.pendingPins = JSON.parse(localStorage.getItem("pins") ?? "[]"); } catch { this.pendingPins = []; }
     this.pendingPins = Array.isArray(this.pendingPins) ? this.pendingPins.filter(p => typeof p === "string") : [];
     this.migratingPins = new Set();
-    this.git = {}; // gitKey() -> { branch, upstream, ahead, behind }, null: no repo / detached
-    this.gitAt = {}; // gitKey() -> when it was last asked
+    this.git = {}; // gitKey() -> { branch, upstream, ahead, behind, dirty }, null: no repo
+    this.gitRecords = {}; // separate refs/worktree ages survive shared-cache eviction
+    this.gitAt = {}; // gitKey() -> when it was last looked at
     this.gitBusy = false;
     if (checking()) return;
     this.badgeOwner = true;
@@ -162,8 +392,31 @@ export default class Agents extends View {
     return [...out.entries()];
   }
 
-  // One look at a time, each place once every GIT_EVERY. A machine that is away
-  // keeps what it showed and is asked again on the next pass.
+  // The record this panel has of a place, in the shape the shared cache keeps.
+  gitRecord(key) {
+    if (this.gitRecords[key]) return this.gitRecords[key];
+    if (!(key in this.git)) return null;
+    const at = this.gitAt[key] ?? 0;
+    return { at, refsAt: at, dirtyAt: at, info: this.git[key] ?? null, unsure: false };
+  }
+
+  // What the other panel (or an earlier run of this one) already knows about a
+  // place: read into the list as it is, with no command and no write. `live`
+  // limits it to the places this panel shows now.
+  adoptGit(live = null) {
+    const cache = readGitStore().places;
+    for (const key of live ?? Object.keys(cache)) {
+      const record = gitRecordOf(cache[key]);
+      if (!record || record.at <= (this.gitAt[key] ?? 0)) continue;
+      this.gitRecords[key] = record;
+      this.gitAt[key] = record.at;
+      this.git[key] = record.info;
+    }
+  }
+
+  // Places looked at together, refs every half minute and the worktree walk less
+  // often. A machine that is away keeps what it showed and is asked again on the
+  // next pass.
   refreshGit(cx) {
     if (this.gitBusy) return;
     const places = this.places();
@@ -173,44 +426,46 @@ export default class Agents extends View {
       if (live.has(key)) continue;
       delete this.git[key];
       delete this.gitAt[key];
+      delete this.gitRecords[key];
     }
+    this.adoptGit(live);
     const now = Date.now();
-    const due = places.filter(([key]) => !this.gitAt[key] || now - this.gitAt[key] >= GIT_EVERY);
+    const due = places.filter(([key]) => {
+      const record = readGitRecord(key) ?? this.gitRecord(key);
+      if (!record) return true;
+      if (record.unsure && now - record.at < GIT_REFS_EVERY) return false;
+      return now - record.refsAt >= GIT_REFS_EVERY || now - record.dirtyAt >= GIT_DIRTY_EVERY;
+    });
     if (!due.length) return;
     this.gitBusy = true;
     cx.spawn(async (cx) => {
-      for (const [key, { on, cwd }] of due) {
-        this.gitAt[key] = Date.now();
-        try {
-          // Writes nothing under .git, like the spaces panel's look.
-          const r = await exec("git", ["--no-optional-locks", "-c", "core.fsmonitor=false", "status", "--porcelain=v2", "--branch"], { cwd, on });
-          if (r.code !== 0) {
-            if (/not a git repository/i.test(r.stderr)) this.git[key] = null;
-            else this.git[key] ??= null;
-            continue;
+      let next = 0;
+      try {
+        await Promise.allSettled(Array.from({ length: Math.min(AT_ONCE, due.length) }, async () => {
+          while (next < due.length) {
+            const [key, place] = due[next++];
+            // The record this look starts from: an answer that lands while the
+            // place waits its turn takes its place.
+            const queued = gitRecordOf(readGitStore().places[key]);
+            await this.check(key, place, queued);
           }
-          const info = { branch: null, upstream: null, ahead: 0, behind: 0, dirty: 0, conflicts: 0 };
-          for (const line of r.stdout.split("\n")) {
-            if (line.startsWith("# branch.head ")) info.branch = line.slice(14);
-            else if (line.startsWith("# branch.upstream ")) info.upstream = line.slice(18);
-            else if (line.startsWith("# branch.ab ")) {
-              const [a, b] = line.slice(12).split(" ");
-              info.ahead = Math.abs(parseInt(a, 10)) || 0;
-              info.behind = Math.abs(parseInt(b, 10)) || 0;
-            }
-            // Work in the tree: `1`/`2` changed or renamed, `?` untracked, `u` a conflict.
-            else if (line.startsWith("u ")) { info.dirty++; info.conflicts++; }
-            else if (/^[12?] /.test(line)) info.dirty++;
-          }
-          this.git[key] = info.branch && info.branch !== "(detached)" ? info : null;
-        } catch {
-          // Couldn't ask (a machine away, a shell it hasn't): wait a round, not every 5s.
-          this.gitAt[key] = Date.now();
-        }
+        }));
+      } finally {
+        this.gitBusy = false;
+        cx.notify();
       }
-      this.gitBusy = false;
-      cx.notify();
     });
+  }
+
+  // One place's git: the shared look, and its answer on the row.
+  async check(key, place, queued = null) {
+    const prev = queued ?? readGitRecord(key) ?? this.gitRecord(key);
+    const walk = !this.gitAt[key] || Date.now() - (Number(prev?.dirtyAt) || 0) >= GIT_DIRTY_EVERY;
+    const record = await checkGit(key, place, prev, { walk });
+    if (!record) return; // a peer owns the first look; adoption will supply its answer
+    this.gitRecords[key] = record;
+    this.gitAt[key] = record.at;
+    this.git[key] = record.info;
   }
 
   // One line of segments sharing `room`: measured against the glyph estimate,
@@ -382,6 +637,7 @@ export default class Agents extends View {
   render(cx) {
     const t = theme();
     if (props()?.sortMenu) return this.sortMenu(t);
+    this.adoptGit();
     const collapsed = narrow();
     const px = sidebarPx();
     const sort = sortOf();
@@ -390,7 +646,12 @@ export default class Agents extends View {
     this.listed = new Map(list.map((a) => [a.address, a.status]));
     const all = terminals();
     if (!checking()) this.migratePins(all);
-    const shown = focused()?.agent;
+    const focus = focused();
+    const active = focus?.shown ?? focus?.terminal ?? focus?.agent ?? list.find(a => a.focused)?.address ?? null;
+    const shown = active;
+    // Only a new navigation unfolds the target. A manually folded current group
+    // stays folded until focus leaves and returns.
+    const navigated = active !== this.revealed;
     const now = Date.now();
     if (!checking()) this.track(list, now);
     this.hold(list);
@@ -409,11 +670,19 @@ export default class Agents extends View {
     list = [...pinned, ...rest];
     if (!checking()) setAgentOrder(list.map((a) => a.address));
 
+    let offset = 0;
+    this.activeAt = -1;
+    const indexed = (el, address) => {
+      if (active && address === active) this.activeAt = offset;
+      offset++;
+      return el;
+    };
     const withKids = (a, i) => {
       const subs = collapsed ? [] : this.tree(all, a.address);
-      const r = row(a, i, subs);
+      if (navigated && subs.some(s => s.t.address === active)) this.folded.delete(a.address);
+      const r = indexed(row(a, i, subs), a.address);
       if (this.folded.has(a.address)) return [r];
-      return [r, ...subs.map((s) => this.subRow(t, s, shown, byPriority))];
+      return [r, ...subs.map(s => indexed(this.subRow(t, s, shown, byPriority), s.t.address))];
     };
 
     // The fold chevron; folded, the count too, colored by the most urgent one.
@@ -582,9 +851,17 @@ export default class Agents extends View {
           .when(!byPriority && top && top !== "idle", (el) => el.child(this.status(t, { status: top }, true)))
           .child(svg("mods/workspace-chrome/chevron-right.svg").size(11).flex_none().text_color(t.dim)));
     };
+    if (navigated) for (const g of groups) {
+      if (g.members.some(a => a.address === active || this.tree(all, a.address).some(s => s.t.address === active))) this.folded.delete(g.id);
+    }
     const rows = collapsed
       ? list.flatMap(withKids)
-      : groups.flatMap((g) => [header(g), ...(this.folded.has(g.id) ? [] : g.members.flatMap(withKids))]);
+      : groups.flatMap(g => [indexed(header(g), null), ...(this.folded.has(g.id) ? [] : g.members.flatMap(withKids))]);
+    if (navigated || this.activeAt !== this.revealedAt) {
+      this.revealed = active;
+      this.revealedAt = this.activeAt;
+      if (this.activeAt >= 0) this.scroll.scroll_to_item(this.activeAt);
+    }
 
     return v_flex()
       .size_full()
@@ -619,7 +896,10 @@ export default class Agents extends View {
       .when(list.length === 0 && !collapsed, (el) =>
         el.child(div().px(12).text_size(12).text_color(t.dim).child("No agent status yet. Agents show up here when they report their status. Older versions and agents inside tmux may not.")),
       )
-      .child(v_flex().id("ag-list").flex_1().min_h(0).px(collapsed ? 0 : 8).overflow_y_scrollbar().mode("always").children(rows))
+      .child(v_flex().id("ag-list").flex_1().min_h(0).px(collapsed ? 0 : 8).overflow_y_scrollbar().mode("always")
+        .track_scroll(this.scroll)
+        .on_size_change((_size, cx) => { if (this.activeAt >= 0) { this.scroll.scroll_to_item(this.activeAt); cx.notify(); } })
+        .children(rows))
       .when(collapsed, (el) =>
         el.child(
           h_flex()

@@ -108,7 +108,10 @@ function makeChain() {
         }
         return (...args) => {
           state.calls.push([prop, ...args]);
-          if (typeof prop === "string" && prop.startsWith("on_")) state.handlers[prop] = args.at(-1);
+          if (typeof prop === "string" && prop.startsWith("on_")) {
+            state.handlers[prop] = args.at(-1);
+            if (typeof args[0] === "string") state.handlers[`${prop}:${args[0]}`] = args.at(-1);
+          }
           return proxy;
         };
       },
@@ -352,10 +355,15 @@ export function makeInstance(Class, overrides = {}) {
     {
       checking: true,
       git: {}, // where() -> info, null: not a repo
+      gitRecords: {}, // per-place freshness even after shared-cache eviction
+      gitAt: {}, // where() -> when it was last looked at (agents)
+      gitBusy: false,
       checked: {}, // where() -> last look (ms)
       unsure: new Set(), // places git could not answer for
       pending: new Set(), // places waiting to be checked
       gitInFlight: new Set(), // places a check already runs for
+      gitWalk: new Set(), // places to walk for changed files, not only refs
+      gitForced: new Set(), // places whose refs to read now, freshness aside
       watching: new Map(), // local repo -> its pending folder watch
       refreshing: false,
       at: {}, // space -> its where() at the last look

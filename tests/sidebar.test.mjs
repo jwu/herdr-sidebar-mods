@@ -229,6 +229,7 @@ test("a temporary Agents git error keeps the previous tail", async () => {
   await context.tasks.at(-1).promise;
   assert.strictEqual(instance.git[key], cached);
   instance.gitAt[key] = 0;
+  delete instance.gitRecords[key]; // force the next attempt past its failure backoff
   herdr.exec = async () => ({ code: 128, stdout: "", stderr: "not a git repository" });
   instance.refreshGit(context);
   await context.tasks.at(-1).promise;

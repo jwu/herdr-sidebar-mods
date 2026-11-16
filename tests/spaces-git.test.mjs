@@ -225,8 +225,11 @@ test("a failed rev-parse never invents repo info, while dirty and conflicts pars
   assert.strictEqual(inst.git[kept], cached);
   assert.equal(inst.unsure.has(kept), true);
 
-  // A full answer parses branch, ahead/behind, dirty and conflicts.
+  // A full answer parses branch, ahead/behind, dirty and conflicts. Two
+  // rev-parse runs name the tree and its common .git (a folder name may hold a
+  // newline); one status walks the tree.
   let watched = [];
+  const calls = [];
   const full = loadMod("sidebar-spaces", {
     watchFolder: (repo) => {
       watched.push(repo);
@@ -235,6 +238,7 @@ test("a failed rev-parse never invents repo info, while dirty and conflicts pars
   });
   const fullInst = makeInstance(full.Class);
   full.herdr.exec = async (_cmd, args) => {
+    calls.push(args);
     if (args.includes("status")) {
       return {
         code: 0,
@@ -250,12 +254,14 @@ test("a failed rev-parse never invents repo info, while dirty and conflicts pars
         stderr: "",
       };
     }
+    // Each rev-parse answers one path, so a path with a newline survives.
     if (args.includes("--show-toplevel")) return { code: 0, stdout: "/work/tree\n", stderr: "" };
     return { code: 0, stdout: "/work/tree/.git\n", stderr: "" };
   };
 
   const work = keyOf("/work/tree");
   await fullInst.check(work, full.context);
+  assert.equal(calls.length, 3, "two rev-parse runs, then the walk");
   const info = fullInst.git[work];
   assert.ok(info, "a successful answer is remembered");
   assert.equal(info.name, "tree");

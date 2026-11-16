@@ -56,7 +56,234 @@ function segmentBudgets(lengths, available) {
 const RAIL_CELL = 32;
 const railCell = (el) => h_flex().flex_none().justify_center().child(el);
 const where = (s, ps) => JSON.stringify([s.machine ?? null, place(s, ps)]);
-const base = (path) => path.replace(/\/+$/, "").split("/").pop();
+
+// --- shared git cache: keep this block identical in both sidebar mods ---
+// The Spaces and Agents panels show the same places, so they keep one answer per
+// place in shared state, and one of them looks at a place while the other reads
+// what it found. A place is (machine, live folder), and the machine stays in the
+// key, so two machines' /repo never mix. A look either walks the worktree for
+// changed files or only reads the refs: on a big repository the walk is the
+// expensive part, and a folder watch or a finished command already says the refs
+// may have moved. Entries nobody looked at for a while go, and the store is
+// bounded, so it cannot grow with the window's history.
+const GIT_CACHE = "sidebar.git.v1";
+const GIT_OWNER = Math.random().toString(36).slice(2); // this copy, not the other panel
+const GIT_REFS_EVERY = 30000; // how stale branch, upstream and ahead/behind may get
+const GIT_DIRTY_EVERY = 60000; // how stale the worktree's changed files may get
+const GIT_STALE = 900000; // a place not looked at for a quarter of an hour is dropped
+const GIT_MAX = 64; // places kept in shared state
+const GIT_TIMEOUT = 20000; // one look at a place, then ask again later
+const GIT_LEASE = GIT_TIMEOUT * 2 + 5000; // both sequential exec phases can take their full timeout
+
+// Runs finished, not returned as they finish: a look is not over while one of
+// its runs still holds an exec slot, and a failure waits for its peers.
+async function allSettledValues(...runs) {
+  const done = await Promise.allSettled(runs);
+  const failed = done.find((d) => d.status === "rejected");
+  if (failed) throw failed.reason;
+  return done.map((d) => d.value);
+}
+
+// The store as read: a damaged or absent value is an empty one.
+function readGitStore() {
+  const store = shared(GIT_CACHE);
+  const part = (v) => (v && typeof v === "object" && !Array.isArray(v) ? v : {});
+  return { places: part(store?.places), leases: part(store?.leases) };
+}
+
+// One place's record, if it is one this panel can use: another copy's damaged
+// write is not this panel's answer.
+function gitRecordOf(r) {
+  if (!r || typeof r !== "object" || !Number.isFinite(r.at) || r.at <= 0) return null;
+  if (Date.now() - r.at > GIT_STALE) return null;
+  if (r.info !== null) {
+    const g = r.info;
+    if (!g || typeof g !== "object" || Array.isArray(g) || typeof g.name !== "string"
+      || (g.branch !== null && typeof g.branch !== "string")
+      || (g.upstream !== null && typeof g.upstream !== "string")
+      || !["ahead", "behind", "dirty", "conflicts"].every(k => Number.isFinite(g[k]) && g[k] >= 0)) return null;
+    try {
+      const repo = JSON.parse(g.repo);
+      if (!Array.isArray(repo) || repo.length !== 2 || (repo[0] !== null && typeof repo[0] !== "string") || typeof repo[1] !== "string") return null;
+    } catch { return null; }
+  }
+  return {
+    at: r.at,
+    refsAt: Number.isFinite(r.refsAt) ? r.refsAt : 0,
+    dirtyAt: Number.isFinite(r.dirtyAt) ? r.dirtyAt : 0,
+    info: r.info ?? null,
+    unsure: r.unsure === true,
+  };
+}
+
+function readGitRecord(key) {
+  return gitRecordOf(readGitStore().places[key]);
+}
+
+// Writes the store: places nobody looked at for a while and leases left behind
+// go. A check (`herdr-app check`) never writes.
+function writeGitStore(places, leases) {
+  if (checking()) return;
+  const now = Date.now();
+  const kept = {};
+  for (const [k, r] of Object.entries(places)) {
+    if (!r || typeof r !== "object" || !Number.isFinite(r.at) || now - r.at > GIT_STALE) continue;
+    kept[k] = r;
+  }
+  const newest = Object.entries(kept).sort((a, b) => b[1].at - a[1].at).slice(0, GIT_MAX);
+  const held = {};
+  for (const [k, l] of Object.entries(leases)) {
+    if (!l || typeof l !== "object" || !Number.isFinite(l.at) || now - l.at >= GIT_LEASE) continue;
+    held[k] = l;
+  }
+  setShared(GIT_CACHE, { places: Object.fromEntries(newest), leases: held });
+}
+
+// One place's answer, for the other panel to read; it also gives up this copy's
+// claim on the place.
+function publishGit(key, record) {
+  if (checking()) return record;
+  const { places, leases } = readGitStore();
+  record = { ...record, at: Date.now() };
+  places[key] = record;
+  delete leases[key];
+  writeGitStore(places, leases);
+  return record;
+}
+
+// Claims a place for the look about to run, so the other panel reads its answer
+// instead of running Git again. A claim older than a look is stale (that copy
+// reloaded or died), so it does not block.
+function claimGit(key) {
+  if (checking()) return true;
+  const { places, leases } = readGitStore();
+  const held = leases[key];
+  if (held && held.owner !== GIT_OWNER && Date.now() - (Number(held.at) || 0) < GIT_LEASE) return false;
+  leases[key] = { owner: GIT_OWNER, at: Date.now() };
+  writeGitStore(places, leases);
+  return true;
+}
+
+// The repo's own name: its .git folder names it, and a worktree's top differs.
+function gitRepoName(repo) {
+  const last = (path) => path.replace(/\/+$/, "").split("/").pop();
+  return repo.endsWith("/.git") ? last(repo.slice(0, -5)) : last(repo).replace(/\.git$/, "");
+}
+
+// A `status --porcelain=v2 --branch` answer: branch, upstream, ahead/behind and
+// the worktree's work — `1`/`2` changed or renamed, `?` untracked, `u` a conflict.
+function gitBranchInfo(stdout) {
+  const info = { branch: null, upstream: null, ahead: 0, behind: 0, dirty: 0, conflicts: 0 };
+  for (const line of stdout.split("\n")) {
+    if (line.startsWith("# branch.head ")) info.branch = line.slice(14);
+    else if (line.startsWith("# branch.upstream ")) info.upstream = line.slice(18);
+    else if (line.startsWith("# branch.ab ")) {
+      const [a, b] = line.slice(12).split(" ");
+      info.ahead = Math.abs(parseInt(a, 10)) || 0;
+      info.behind = Math.abs(parseInt(b, 10)) || 0;
+    } else if (line.startsWith("u ")) { info.dirty++; info.conflicts++; }
+    else if (/^[12?] /.test(line)) info.dirty++;
+  }
+  if (info.branch === "(detached)") info.branch = null;
+  return info;
+}
+
+// What Git answers when there is nothing unusual to report: a detached or unborn
+// HEAD, a branch without an upstream. Anything else (ssh, a folder gone) is a
+// look Git did not make, and the panel keeps what it showed.
+const GIT_NO_REF = /not a symbolic ref|does not point to a branch|not a git repository/i;
+const GIT_NO_UPSTREAM = /no upstream configured|no such branch|does not point to a branch|ambiguous argument|unknown revision|not a git repository/i;
+const gitNoRepo = (r) => r.code !== 0 && /not a git repository/i.test(r.stderr ?? "");
+const gitUnanswered = (r, quiet) => r.code !== 0 && !quiet.test(r.stderr ?? "")
+  && !(quiet === GIT_NO_REF && r.code === 1 && !(r.stderr ?? "").trim());
+
+// One place's git answer. `prev` is the record this panel already has; `walk`
+// asks for the worktree's changed files too, `force` reads the refs even when
+// they were read a moment ago (a folder watch or a finished command). `at`,
+// `refsAt` and `dirtyAt` say when each part was read; `unsure` marks an answer
+// Git would not give, so a panel keeps what it showed and asks again.
+async function checkGit(key, place, prev, { walk = false, force = false } = {}) {
+  const on = place.on ?? null;
+  const opts = { cwd: place.cwd, on, timeout: GIT_TIMEOUT };
+  const info = prev?.info ?? null;
+  const asked = Number(prev?.at) || 0;
+  const refsAt = Number(prev?.refsAt) || 0;
+  const dirtyAt = Number(prev?.dirtyAt) || 0;
+  const now = Date.now();
+  // Another panel answered while this place waited its turn: that is the answer.
+  const peer = readGitRecord(key);
+  if (peer && peer.at > asked && (!walk || peer.dirtyAt > dirtyAt)) return peer;
+  const full = walk || !info;
+  // The refs alone, and only when they could have moved since.
+  if (!full && !force && now - refsAt < GIT_REFS_EVERY) return prev;
+  if (!claimGit(key)) return prev; // the other panel is looking at it now
+  try {
+    if (!full) {
+      // A checkout, a commit or a fetch shows here without walking this
+      // repository's worktree.
+      const [ref, up] = await allSettledValues(
+        exec("git", ["symbolic-ref", "-q", "HEAD"], opts),
+        exec("git", ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], opts),
+      );
+      if (gitUnanswered(ref, GIT_NO_REF) || gitUnanswered(up, GIT_NO_UPSTREAM)) {
+        return publishGit(key, { at: now, refsAt, dirtyAt, info, unsure: true });
+      }
+      if (gitNoRepo(ref) || gitNoRepo(up)) {
+        return publishGit(key, { at: now, refsAt: now, dirtyAt: now, info: null, unsure: false });
+      }
+      // `HEAD...@{upstream}` counts ahead then behind; no upstream has nothing to count.
+      const counts = up.code === 0
+        ? await exec("git", ["rev-list", "--left-right", "--count", "HEAD...@{upstream}"], opts)
+        : null;
+      if (counts && gitUnanswered(counts, GIT_NO_UPSTREAM)) {
+        return publishGit(key, { at: now, refsAt, dirtyAt, info, unsure: true });
+      }
+      const branch = ref.code === 0 ? ref.stdout.trim().replace(/^refs\/heads\//, "") : "";
+      const upstream = up.code === 0 ? up.stdout.trim() || null : null;
+      const [ahead, behind] = counts?.code === 0
+        ? counts.stdout.trim().split(/\s+/).map((n) => Math.abs(parseInt(n, 10)) || 0)
+        : [0, 0];
+      return publishGit(key, {
+        at: now, refsAt: now, dirtyAt, unsure: false,
+        info: { ...info, branch: branch || null, upstream, ahead, behind },
+      });
+    }
+    // The walk: the repo's own folders, then the worktree. Two `rev-parse` runs
+    // because a folder name may itself contain a newline; `status` takes no
+    // optional locks and no fsmonitor cookie, so it writes nothing under .git and
+    // does not wake the folder watch the spaces panel keeps on the repository.
+    const [top, common] = await allSettledValues(
+      exec("git", ["rev-parse", "--path-format=absolute", "--show-toplevel"], opts),
+      exec("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], opts),
+    );
+    if (gitNoRepo(top) || gitNoRepo(common)) {
+      return publishGit(key, { at: now, refsAt: now, dirtyAt: now, info: null, unsure: false });
+    }
+    if (top.code !== 0 || common.code !== 0) {
+      // Git would not answer (a machine away, a folder it lost): keep the last.
+      return publishGit(key, { at: now, refsAt, dirtyAt, info, unsure: true });
+    }
+    const status = await exec("git", ["--no-optional-locks", "-c", "core.fsmonitor=false", "status", "--porcelain=v2", "--branch"], opts);
+    // Strip only Git's final newline: a folder name may contain whitespace.
+    const tree = top.stdout.replace(/\n$/, "");
+    const repo = common.stdout.replace(/\n$/, "");
+    if (gitNoRepo(status)) {
+      return publishGit(key, { at: now, refsAt: now, dirtyAt: now, info: null, unsure: false });
+    }
+    if (status.code !== 0 || !tree || !repo) {
+      return publishGit(key, { at: now, refsAt, dirtyAt, info, unsure: true });
+    }
+    return publishGit(key, {
+      at: now, refsAt: now, dirtyAt: now, unsure: false,
+      info: { ...gitBranchInfo(status.stdout), name: gitRepoName(repo), repo: JSON.stringify([on, repo]), linked: repo !== `${tree}/.git` },
+    });
+  } catch {
+    // Couldn't ask (the machine is away): keep what it showed, look again later.
+    return publishGit(key, { at: now, refsAt, dirtyAt, info, unsure: true });
+  }
+}
+// --- end shared git cache ---
+
 // A space, tab, pane or terminal id without its machine prefix: a process on
 // that machine names its own terminal the bare way.
 const bare = (id) => id.slice(id.lastIndexOf("/") + 1);
@@ -80,9 +307,6 @@ const hostOf = (target) => {
   const colon = s.indexOf(":");
   return colon > 0 ? s.slice(0, colon) : s;
 };
-// Changes made outside Herdr (an editor's save, a commit in another app): looked
-// for this often, in repos the list shows, while the window is in front.
-const FALLBACK = 60000;
 // Bound the work across machines; a slow repository must not hold up the list.
 const AT_ONCE = 6;
 
@@ -230,10 +454,13 @@ export function mark(status, t) {
 export default class Spaces extends View {
   init(_props, cx) {
     this.git = {}; // where() -> { name, branch, ahead, behind, repo, linked }, null: not a repo
+    this.gitRecords = {}; // separate refs/worktree ages survive shared-cache eviction
     this.checked = {}; // where() -> when it was last looked at
     this.unsure = new Set(); // where()s git couldn't answer for (a machine away)
     this.pending = new Set(); // where()s to look at next
     this.gitInFlight = new Set(); // places already being checked
+    this.gitWalk = new Set(); // where()s to walk for changed files, not only refs
+    this.gitForced = new Set(); // where()s whose refs to read now, freshness aside
     this.busy = {}; // pane -> an agent working or a program in front of its shell
     this.ready = {}; // machine -> its layout was readable at the last look
     this.at = {}; // space -> its where() at the last look
@@ -311,8 +538,16 @@ export default class Spaces extends View {
   checkNew(cx) {
     const now = Date.now();
     const sp = spaces();
+    const ps = panes();
     for (const s of sp) if (!this.shown.has(s.id)) this.born[s.id] ??= now;
-    const due = this.due(now, sp, panes());
+    this.adoptGit(new Set(sp.map((s) => where(s, ps))));
+    // A repository the other panel answered for needs its watch here too, so
+    // changes in it reach this panel without another timer.
+    for (const [key, info] of Object.entries(this.git)) {
+      const repo = info?.repo;
+      if (repo && JSON.parse(key)[0] === null) this.watch(JSON.parse(repo)[1], cx);
+    }
+    const due = this.due(now, sp, ps);
     if (due.size) this.refreshGit(due, cx);
     if (sp.some((s) => !this.shown.has(s.id)) || this.orderingDue(now)) cx.notify();
   }
@@ -328,16 +563,23 @@ export default class Spaces extends View {
     for (const k of Object.keys(this.git)) if (!keys.has(k)) {
       delete this.git[k];
       delete this.checked[k];
+      delete this.gitRecords[k];
       this.unsure.delete(k);
     }
     for (const k of this.pending) if (!keys.has(k)) this.pending.delete(k);
+    for (const k of this.gitWalk) if (!keys.has(k)) this.gitWalk.delete(k);
+    for (const k of this.gitForced) if (!keys.has(k)) this.gitForced.delete(k);
     const repos = new Set(Object.values(this.git).filter(Boolean).map(g => g.repo));
     for (const [repo, pending] of this.watching) if (!repos.has(JSON.stringify([null, repo]))) {
       this.watching.delete(repo);
       pending.cancel();
     }
+    // A place nobody has looked at needs its repo and its worktree; a change in
+    // view (a new folder, a finished command, a machine back) needs the walk too.
     const due = new Set([...keys].filter((k) => !(k in this.git)));
-    for (const [id, k] of Object.entries(at)) if (this.at[id] && this.at[id] !== k && keys.has(k)) due.add(k);
+    for (const k of due) this.gitWalk.add(k);
+    const walked = (k) => { due.add(k); this.gitWalk.add(k); };
+    for (const [id, k] of Object.entries(at)) if (this.at[id] && this.at[id] !== k && keys.has(k)) walked(k);
     this.at = at;
     const spaceOf = {};
     for (const s of sp) for (const t of s.tabs ?? []) spaceOf[t.id] = s;
@@ -345,18 +587,25 @@ export default class Spaces extends View {
     for (const p of ps) {
       if (!p.terminal || !spaceOf[p.tab]) continue;
       busy[p.pane] = p.status === "working" || !(p.program?.shell || p.program?.agent);
-      if (this.busy[p.pane] && !busy[p.pane]) this.sameRepo(at[spaceOf[p.tab].id], keys).forEach((k) => due.add(k));
+      if (this.busy[p.pane] && !busy[p.pane]) this.sameRepo(at[spaceOf[p.tab].id], keys).forEach(walked);
     }
     this.busy = busy;
     for (const m of machines()) {
       const ready = m.layout === "ready";
-      if (ready && this.ready[m.name] === false) for (const k of keys) if (JSON.parse(k)[0] === m.name) due.add(k);
+      if (ready && this.ready[m.name] === false) for (const k of keys) if (JSON.parse(k)[0] === m.name) walked(k);
       this.ready[m.name] = ready;
     }
     if (window().active) {
+      // The fallback looks are for what moves without this machine seeing it (a
+      // commit elsewhere, an editor saving): the refs alone every half minute,
+      // the worktree's work less often.
       for (const k of keys) {
-        const asks = this.git[k] || this.unsure.has(k);
-        if (asks && !this.folded.has(JSON.parse(k)[0]) && now - (this.checked[k] ?? 0) > FALLBACK) due.add(k);
+        if (!(this.git[k] || this.unsure.has(k)) || this.folded.has(JSON.parse(k)[0])) continue;
+        const record = readGitRecord(k) ?? this.gitRecord(k);
+        if (record?.unsure && now - record.at < GIT_REFS_EVERY) continue;
+        const refsAt = Math.max(record?.refsAt ?? 0, this.checked[k] ?? 0);
+        if (now - (record?.dirtyAt ?? this.checked[k] ?? 0) > GIT_DIRTY_EVERY) walked(k);
+        else if (now - refsAt > GIT_REFS_EVERY) due.add(k);
       }
     }
     return due;
@@ -665,6 +914,9 @@ export default class Spaces extends View {
     for (const k of keys) if (!this.gitInFlight.has(k)) this.pending.add(k);
     if (this.refreshing) return;
     this.refreshing = true;
+    // What the cache said when these places were queued: an answer that lands
+    // while one waits its turn takes their place instead of a second look.
+    this.gitQueued = readGitStore().places;
     cx.spawn(async (cx) => {
       try {
         const done = await Promise.allSettled(Array.from({ length: AT_ONCE }, async () => {
@@ -682,63 +934,54 @@ export default class Spaces extends View {
         if (failed) throw failed.reason;
       } finally {
         this.refreshing = false;
+        this.gitQueued = null;
         cx.notify();
       }
     });
   }
 
-  // One place's git: branch, ahead/behind, its repo.
+  // The record this panel has of a place, in the shape the shared cache keeps.
+  gitRecord(key) {
+    if (this.gitRecords[key]) return this.gitRecords[key];
+    if (this.git[key] === undefined && !this.unsure.has(key)) return null;
+    const at = this.checked[key] ?? 0;
+    return { at, refsAt: at, dirtyAt: at, info: this.git[key] ?? null, unsure: this.unsure.has(key) };
+  }
+
+  // What the other panel (or an earlier run of this one) already knows about a
+  // place: read into the list as it is, with no command and no write. `live`
+  // limits it to the places this panel shows now.
+  adoptGit(live = null) {
+    const cache = readGitStore().places;
+    for (const key of live ?? Object.keys(cache)) {
+      const record = gitRecordOf(cache[key]);
+      if (!record || record.at <= (this.checked[key] ?? 0)) continue;
+      this.gitRecords[key] = record;
+      this.checked[key] = record.at;
+      this.git[key] = record.info;
+      if (record.unsure) this.unsure.add(key);
+      else this.unsure.delete(key);
+    }
+  }
+
+  // One place's git, shared with the agents panel. A place this panel watched
+  // change (a new folder, a finished command, a folder watch) asks for the
+  // worktree too; the fallback look only refreshes what the refs say.
   async check(key, cx) {
     const [on, cwd] = JSON.parse(key);
-    this.checked[key] = Date.now();
-    this.unsure.delete(key);
-    try {
-      // No optional locks: a status that touched the index would wake the watch again.
-      // Writes nothing under .git (index lock, fsmonitor cookie): watch() would wake on it.
-      const r = await exec("git", ["--no-optional-locks", "-c", "core.fsmonitor=false", "status", "--porcelain=v2", "--branch"], { cwd, on });
-      if (r.code !== 0) {
-        // Only git's own "no" is remembered as no repo; anything else is asked again.
-        if (!/not a git repository/i.test(r.stderr)) {
-          this.unsure.add(key);
-          this.git[key] ??= null;
-        } else this.git[key] = null;
-        return;
-      }
-      // The repo's own .git folder names it; a worktree's top differs from it.
-      const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd, on });
-      const common = await exec("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd, on });
-      if (top.code !== 0 || common.code !== 0) {
-        const failed = top.code !== 0 ? top : common;
-        if (/not a git repository/i.test(failed.stderr)) this.git[key] = null;
-        else {
-          this.git[key] ??= null;
-          this.unsure.add(key);
-        }
-        return;
-      }
-      // Strip only Git's final newline; a folder name may contain whitespace.
-      const repo = common.stdout.replace(/\n$/, "");
-      const name = repo.endsWith("/.git") ? base(repo.slice(0, -5)) : base(repo).replace(/\.git$/, "");
-      const info = { name, branch: null, upstream: null, ahead: 0, behind: 0, dirty: 0, conflicts: 0, repo: JSON.stringify([on, repo]), linked: repo !== `${top.stdout.replace(/\n$/, "")}/.git` };
-      for (const line of r.stdout.split("\n")) {
-        if (line.startsWith("# branch.head ")) info.branch = line.slice(14);
-        else if (line.startsWith("# branch.upstream ")) info.upstream = line.slice(18);
-        else if (line.startsWith("# branch.ab ")) {
-          const [a, b] = line.slice(12).split(" ");
-          info.ahead = Math.abs(parseInt(a, 10)) || 0;
-          info.behind = Math.abs(parseInt(b, 10)) || 0;
-        }
-        // Work in the tree: `1`/`2` changed or renamed, `?` untracked, `u` a conflict.
-        else if (line.startsWith("u ")) { info.dirty++; info.conflicts++; }
-        else if (/^[12?] /.test(line)) info.dirty++;
-      }
-      this.git[key] = info;
-      if (!on) this.watch(repo, cx);
-    } catch {
-      // Couldn't ask (the machine is away): keep what it showed, look again later.
-      this.git[key] ??= null;
-      this.unsure.add(key);
-    }
+    const queued = this.gitQueued?.[key];
+    const prev = (queued ? gitRecordOf(queued) : null) ?? readGitRecord(key) ?? this.gitRecord(key);
+    const walk = this.gitWalk.delete(key) || !(key in this.git);
+    const force = this.gitForced.delete(key);
+    const record = await checkGit(key, { on, cwd }, prev, { walk, force });
+    if (!record) return; // a peer owns the first look; adoption will supply its answer
+    this.gitRecords[key] = record;
+    this.checked[key] = record.at;
+    this.git[key] = record.info;
+    if (record?.unsure) this.unsure.add(key);
+    else this.unsure.delete(key);
+    const repo = record?.info?.repo;
+    if (!on && repo) this.watch(JSON.parse(repo)[1], cx);
   }
 
   watch(repo, cx) {
@@ -754,6 +997,9 @@ export default class Spaces extends View {
           const mine = JSON.stringify([null, repo]);
           const keys = Object.keys(this.git).filter(k => this.git[k]?.repo === mine);
           if (!keys.length) break;
+          // Something in the repository changed (a commit, a checkout, a staged
+          // file): read the refs now, not when the fallback comes round.
+          for (const k of keys) { this.gitForced.add(k); this.gitWalk.delete(k); }
           this.refreshGit(keys, cx);
           current = watchFolder(repo);
           this.watching.set(repo, current);
@@ -1204,6 +1450,7 @@ export default class Spaces extends View {
   render() {
     const t = theme();
     const collapsed = narrow();
+    this.adoptGit();
     const palette = ["ansi6", "ansi3", "ansi4", "ansi5", "ansi2", "ansi1"];
     const sp = spaces();
     const ids = new Set(sp.map(p => p.id));
