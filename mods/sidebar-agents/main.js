@@ -25,6 +25,10 @@ const fit = (text, glyphs) => (text.length <= glyphs ? text : `${text.slice(0, M
 // The tail is cut to its budget and then sized by its own text, so it ends at
 // the row's right edge instead of at the end of a wider measured cell.
 const SEG_GAP = 6;
+// How far the bar's lane reaches in from the right edge (it is 6pt wide, drawn
+// 4.5pt in): rows stop exactly where it starts, so nothing sits under it and
+// nothing leaves a visible gap either.
+const SCROLL_GUTTER = 11;
 function segmentBudgets(lengths, available) {
   const budgets = lengths.map((n) => (n > 0 ? 1 : 0));
   let left = available - budgets.reduce((a, b) => a + b, 0);
@@ -896,7 +900,7 @@ export default class Agents extends View {
       .when(list.length === 0 && !collapsed, (el) =>
         el.child(div().px(12).text_size(12).text_color(t.dim).child("No agent status yet. Agents show up here when they report their status. Older versions and agents inside tmux may not.")),
       )
-      .child(v_flex().id("ag-list").flex_1().min_h(0).px(collapsed ? 0 : 8).overflow_y_scrollbar().mode("always")
+      .child(v_flex().id("ag-list").flex_1().min_h(0).when(!collapsed, (el) => el.pl(8).pr(SCROLL_GUTTER)).overflow_y_scrollbar().mode("always")
         .track_scroll(this.scroll)
         .on_size_change((_size, cx) => { if (this.activeAt >= 0) { this.scroll.scroll_to_item(this.activeAt); cx.notify(); } })
         .children(rows))

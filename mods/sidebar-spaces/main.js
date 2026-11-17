@@ -54,6 +54,10 @@ function segmentBudgets(lengths, available) {
   return budgets;
 }
 const RAIL_CELL = 32;
+// How far the bar's lane reaches in from the right edge (it is 6pt wide, drawn
+// 4.5pt in): header controls, selection boxes and empty rows stop exactly where
+// it starts, so nothing sits under it and nothing leaves a visible gap.
+const SCROLL_GUTTER = 11;
 const railCell = (el) => h_flex().flex_none().justify_center().child(el);
 const where = (s, ps) => JSON.stringify([s.machine ?? null, place(s, ps)]);
 
@@ -1120,7 +1124,7 @@ export default class Spaces extends View {
       return layout === "loading" || (!layout && this.machines.some(k => k.name === m && k.state === "connected"))
         || spaces().some(s => (s.machine ?? null) === m && !this.shown.has(s.id));
     };
-    const loadingRow = m => h_flex().id(`machine-loading-${m ?? "local"}`).h(28).flex_none().ml(collapsed ? 0 : 20).mr(collapsed ? 0 : 8).my(1).px(collapsed ? 0 : 8).items_center().when(collapsed, el => el.justify_center()).text_size(12).text_color(t.dim).child(collapsed ? "…" : "Loading…");
+    const loadingRow = m => h_flex().id(`machine-loading-${m ?? "local"}`).h(28).flex_none().ml(collapsed ? 0 : 20).mr(collapsed ? 0 : SCROLL_GUTTER).my(1).px(collapsed ? 0 : 8).items_center().when(collapsed, el => el.justify_center()).text_size(12).text_color(t.dim).child(collapsed ? "…" : "Loading…");
     const machineNames = this.arranged(this.machineNames());
     return machineNames.flatMap((m) => {
       const mine = rows.filter((r) => (r.w.machine ?? null) === m);
@@ -1212,14 +1216,14 @@ export default class Spaces extends View {
           .child(div().relative().flex_none().child(icon()).when(Boolean(m), el => el.child(badge()))
             .when(m === null && this.cup === "on", el => el.child(div().absolute().right(-3).bottom(-2).size(6).rounded(3).border_1().border_color(t.surface).bg(t.ansi3))))
           .when(machine?.keeps_running_after_logout === false, el => el.child(warning())))
-        : drag(v_flex().id(`machine-${m ?? "local"}`).relative().flex_none().mt(4).mb(1).pl(collapsed ? 0 : 18).pr(collapsed ? 0 : 10).pt(5).pb(6).bg(t.surface)
+        : drag(v_flex().id(`machine-${m ?? "local"}`).relative().flex_none().mt(4).mb(1).pl(collapsed ? 0 : 18).pr(collapsed ? 0 : SCROLL_GUTTER).pt(5).pb(6).bg(t.surface)
           .text_size(13.5).font_medium().text_color(connected ? t.foreground : t.muted)
           .cursor_pointer().hover(s => s.bg(t.hover))
           .when(this.machinePress?.m === m && carrying, (el) => el.opacity(0.5))
           .when(carrying && this.machineOver?.m === m, (el) => el.child(drop()))
           .child(row1)
           .child(this.usage(m, t, connected)));
-      const empty = h_flex().id(`machine-new-${m ?? "local"}`).h(28).flex_none().ml(collapsed ? 0 : 20).mr(collapsed ? 0 : 8).my(1).px(collapsed ? 0 : 8).gap(7).items_center().rounded(4)
+      const empty = h_flex().id(`machine-new-${m ?? "local"}`).h(28).flex_none().ml(collapsed ? 0 : 20).mr(collapsed ? 0 : SCROLL_GUTTER).my(1).px(collapsed ? 0 : 8).gap(7).items_center().rounded(4)
         .text_size(12).text_color(t.dim).hover(s => s.bg(t.hover).text_color(t.foreground))
         .on_click(() => run("space.new", { machine: m ?? "" }))
         .when(collapsed, el => el.w(RAIL_CELL).rounded(4).justify_center().tooltip(`New space on ${m ?? "Local"}`)
@@ -1354,7 +1358,7 @@ export default class Spaces extends View {
       .id(`space-box-${w.id}`)
       .flex_none()
       .ml(20)
-      .mr(8)
+      .mr(SCROLL_GUTTER)
       .my(1)
       .rounded(4)
       .when(on, (el) => el.bg(t.ansi5 + "33"))
