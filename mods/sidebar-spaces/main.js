@@ -1029,7 +1029,7 @@ export default class Spaces extends View {
     const ready = (w) => this.shown.has(w.id) || where(w, ps) in this.git || Date.now() - (this.born[w.id] ??= Date.now()) > 1500;
     for (const w of sp) if (!this.shown.has(w.id) && ready(w)) this.shown.add(w.id);
     // Herdr's own order: this machine first, then machines by name. The panel
-    // regroups them in the order dragged here (see `displayed`); a space cannot
+    // regroups them in the order dragged here (see `machineGroups`); a space cannot
     // move into another machine's block, so that order stays local to the mod.
     const list = sp.map((w, i) => ({ w, i, g: this.git[where(w, ps)] ?? null }));
     const mains = new Set(list.filter((r) => r.g && !r.g.linked).map((r) => r.g.repo));
@@ -1093,47 +1093,47 @@ export default class Spaces extends View {
     localStorage.setItem("machines.order", JSON.stringify(next));
   }
 
-  // The rows as the panel draws them: the machines in the order dragged here,
-  // each its own rows in Herdr's order. This is what ctrl-1..9 count.
-  displayed() {
+  machineGroups(collapsed) {
     const rows = this.ordered();
-    return this.arranged(this.machineNames()).flatMap((m) => rows.filter((r) => (r.w.machine ?? null) === m));
+    return this.arranged(this.machineNames()).map((m) => {
+      const repair = this.reconnecting[m];
+      const machine = this.machines.find(k => k.name === m) ?? repair?.machine;
+      const rebuilt = this.rebuilt(machine) || !!repair;
+      const folded = this.folded.has(m);
+      const visible = !folded && (collapsed || !rebuilt);
+      return { m, machine, repair, rebuilt, folded, rows: visible ? rows.filter(r => (r.w.machine ?? null) === m) : [] };
+    });
   }
 
-  // Shows the space the panel lists at `n` (1-based). Herdr's own `space.select`
-  // counts the daemon's order instead, which a machine dragged here no longer
-  // matches, so keys.json sends ctrl-1..9 to `pick1`..`pick9`.
+  // Shows the space at `n` (1-based) in the same order as the drawn rows.
+  // `space.select` by index uses the daemon's order, so select by id instead.
   pick(n) {
-    const row = this.displayed()[n - 1];
+    const row = this.machineGroups(narrow()).flatMap(group => group.rows)[n - 1];
     if (row) run("space.select", { id: row.w.id });
   }
 
   // The rows, under a header per machine. The header stays for this computer
   // alone, so a single-machine panel keeps showing its load.
   grouped(t, collapsed) {
-    const rows = this.ordered();
+    const groups = this.machineGroups(collapsed);
     this.activeAt = -1;
     let before = 0; // direct children before this machine, including guidance rows
+    let number = 0; // one-based space number in the rail
     // A space draws as its row and, under it, the ports its servers listen on;
     // both sit inside one selection box (see `spaceBox`).
     const draw = (r) => collapsed
-      ? [this.compact(r, t)]
-      : [this.spaceBox(r, t)];
+      ? this.compact(r, t, ++number)
+      : this.spaceBox(r, t);
     const loading = m => {
       const layout = machines().find(k => k.name === m)?.layout;
       return layout === "loading" || (!layout && this.machines.some(k => k.name === m && k.state === "connected"))
         || spaces().some(s => (s.machine ?? null) === m && !this.shown.has(s.id));
     };
     const loadingRow = m => h_flex().id(`machine-loading-${m ?? "local"}`).h(28).flex_none().ml(collapsed ? 0 : 20).mr(collapsed ? 0 : SCROLL_GUTTER).my(1).px(collapsed ? 0 : 8).items_center().when(collapsed, el => el.justify_center()).text_size(12).text_color(t.dim).child(collapsed ? "…" : "Loading…");
-    const machineNames = this.arranged(this.machineNames());
-    return machineNames.flatMap((m) => {
-      const mine = rows.filter((r) => (r.w.machine ?? null) === m);
-      const repair = this.reconnecting[m];
-      const machine = this.machines.find(k => k.name === m) ?? repair?.machine;
+    const machineNames = groups.map(group => group.m);
+    return groups.flatMap(({ m, machine, repair, rebuilt, folded, rows }) => {
       const connected = !m || machine?.state === "connected";
-      const rebuilt = this.rebuilt(machine) || !!repair;
       const login = machine?.state === "needs_login" ? `hc machine login ${m}` : null;
-      const folded = this.folded.has(m);
       // Elements are single-use: the rail and the wide head each build their own.
       const icon = () => svg(`mods/workspace-chrome/${m ? "server" : "monitor"}.svg`).size(14).flex_none().text_color(t.muted);
       const badge = () => div().absolute().right(-3).bottom(-2).size(6).rounded(3).border_1().border_color(t.chrome).bg(connected ? t.ansi2 : t.muted);
@@ -1240,8 +1240,8 @@ export default class Spaces extends View {
             .text_size(11).text_color(t.foreground).bg(t.raised).cursor_pointer().hover(s => s.bg(t.hover))
             .on_click((_e, cx) => { cx.stop_propagation(); cx.write_to_clipboard(login); this.copiedLogin = login; cx.notify(); })
             .child(this.copiedLogin === login ? "Copied" : "Copy")))] : [];
-      const items = [cell(head), ...guidance, ...(folded ? [] : mine.length ? mine.flatMap(draw) : [loading(m) ? loadingRow(m) : cell(empty)])];
-      const first = folded ? -1 : mine.findIndex(r => r.w.active);
+      const items = [cell(head), ...guidance, ...(folded ? [] : rows.length ? rows.map(draw) : [loading(m) ? loadingRow(m) : cell(empty)])];
+      const first = rows.findIndex(r => r.w.active);
       if (first >= 0) this.activeAt = before + 1 + guidance.length + first;
       before += items.length;
       return items;
@@ -1435,7 +1435,7 @@ export default class Spaces extends View {
       ]));
   }
 
-  compact({ w, i }, t) {
+  compact({ w }, t, number) {
     return railCell(h_flex()
       .id(`space-${w.id}`)
       .relative()
@@ -1447,7 +1447,7 @@ export default class Spaces extends View {
       .when(w.active, (el) => el.bg(t.ansi5 + "33"))
       .when(!w.active, (el) => el.hover((s) => s.bg(t.hover)))
       .on_click(() => run("space.select", { id: w.id }))
-      .child(div().text_color(w.active ? t.foreground : t.muted).child(String(i + 1)))
+      .child(div().text_color(w.active ? t.foreground : t.muted).child(String(number)))
       .child(div().absolute().right(5).text_color(tone(t, w.status)).child(glyph(w.status))));
   }
 

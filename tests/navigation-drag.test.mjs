@@ -169,6 +169,45 @@ test("Spaces rows and ports do not expose terminal path drags in full or rail vi
   }
 });
 
+test("Spaces shortcuts and rail numbers follow the rows shown after reordering or folding", () => {
+  const p = spacesPanel();
+  const selections = [];
+  p.herdr.run = (name, args) => {
+    if (name === "space.select") selections.push(args.id);
+  };
+  p.instance.shown = new Set(["s1", "s2"]);
+  p.instance.moveMachine("vps", null, [null, "vps"]);
+
+  const check = (expected) => {
+    const root = p.render();
+    const rows = [...nodes(root)].filter(node => /^space-s[12]$/.test(uiState(node).id));
+    assert.deepEqual(rows.map(node => uiState(node).id.slice("space-".length)), expected);
+    if (p.data.width < 160) {
+      const labels = rows.map(node => {
+        const [label] = uiState(node).children;
+        return uiState(label).children[0];
+      });
+      assert.deepEqual(labels, expected.map((_, i) => String(i + 1)));
+    }
+    selections.length = 0;
+    for (let n = 1; n <= expected.length + 1; n++) p.instance.pick(n);
+    assert.deepEqual(selections, expected);
+  };
+
+  for (const width of [300, 76]) {
+    p.data.width = width;
+    p.instance.folded.clear();
+    check(["s2", "s1"]);
+    p.instance.folded.add("vps");
+    check(["s1"]);
+    p.instance.folded.clear();
+    p.instance.machines[0].state = "unreachable";
+    p.instance.machines[0].why = 'a different core answers there ("new-core")';
+    check(width < 160 ? ["s2", "s1"] : ["s1"]);
+    p.instance.machines[0].state = "connected";
+  }
+});
+
 test("Spaces preserves its original sidebar reorder and click-to-select gestures", () => {
   const p = spacesPanel();
   const actions = [];
