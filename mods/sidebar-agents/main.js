@@ -77,6 +77,24 @@ function treeLines(lines, t) {
     .when(line === "├", el => el.child(div().absolute().left(TREE_STROKE_WIDTH).right(0).top(12.5).h(TREE_STROKE_WIDTH).bg(color))));
 }
 
+// A peek does not clear the core's Done report. Remember the viewed turn
+// across both panels and let the next turn display Done again.
+function viewedTerminalStatuses(all, shown) {
+  const key = "sidebar.viewedTerminalTurns";
+  const viewed = shared(key) ?? {};
+  const turnOf = term => term.turn ?? term.status_ms;
+  const current = all.find(term => term.address === shown && term.state === "live" && term.status === "done");
+  const turn = current && turnOf(current);
+  if (turn != null && viewed[shown] !== turn && !checking()) {
+    const seen = Object.fromEntries(all.filter(term => term.state === "live" && term.status === "done" &&
+      turnOf(term) != null && viewed[term.address] === turnOf(term)).map(term => [term.address, turnOf(term)]));
+    setShared(key, { ...seen, [shown]: turn });
+  }
+  return all.map(term => term.state === "live" && term.status === "done" &&
+    (term === current || (turnOf(term) != null && viewed[term.address] === turnOf(term)))
+    ? { ...term, status: "idle" } : term);
+}
+
 function leadPanes(all) {
   const leads = new Map();
   for (const p of all) {
@@ -97,11 +115,11 @@ function title(tab, l) {
   return (tab.name === prog || !tab.named) && telling ? live : tab.name;
 }
 const RANK = { blocked: 4, done: 3, working: 2, idle: 1 };
-// A sub-agent without a pane isn't in agents(): its raw word, error counting as
-// blocked. It's never done: it reports to its parent, and the parent's done is the news.
+// Prefer the pane's display status when available. A child without a pane
+// keeps the core's Done state, as in Spaces.
 const kidStatus = (k, listed) => {
   const s = listed.get(k.address) ?? k.status;
-  return s === "error" ? "blocked" : s === "done" ? "idle" : s;
+  return s === "error" ? "blocked" : s;
 };
 const SORTS = [
   { id: "priority", label: "Priority", icon: "clock" },
@@ -605,6 +623,7 @@ export default class Agents extends View {
 
   peek(addr) {
     run("terminal.peek", { terminal: addr });
+    viewedTerminalStatuses(terminals(), addr);
   }
 
   // Skip plain terminals in the tree while keeping any agents they started.
@@ -652,7 +671,12 @@ export default class Agents extends View {
         this.hoveredChild = hovered;
         cx.notify();
       })
-      .on_click(() => (this.listed.has(k.address) ? run("pane.focus", { terminal: k.address }) : this.peek(k.address)))
+      .on_click((_e, cx) => {
+        this.hoveredChild = null;
+        cx.notify();
+        if (this.listed.has(k.address)) run("pane.focus", { terminal: k.address });
+        else this.peek(k.address);
+      })
       .child(div().w(AGENT_STATUS_WIDTH).mr(treeInset).flex_none().flex().justify_center()
         .child(this.status(t, { status: st }, true)))
       .children(treeLines(s.lines, t))
@@ -693,8 +717,8 @@ export default class Agents extends View {
     const sort = sortOf();
     let list = [...agents()];
     this.listed = new Map(list.map((a) => [a.address, a.status]));
-    const all = terminals();
     const focus = focused();
+    const all = viewedTerminalStatuses(terminals(), focus?.shown);
     // `agents()` requires a pane. Use core reports for agents that have
     // neither a pane nor a row in an attached agent's tree.
     const ps = panes();

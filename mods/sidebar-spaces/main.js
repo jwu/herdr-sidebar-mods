@@ -75,6 +75,24 @@ const SCROLL_GUTTER = 11;
 const railCell = (el) => h_flex().flex_none().justify_center().child(el);
 const where = (s, ps) => JSON.stringify([s.machine ?? null, place(s, ps)]);
 
+// A peek does not clear the core's Done report. Remember the viewed turn
+// across both panels and let the next turn display Done again.
+function viewedTerminalStatuses(all, shown) {
+  const key = "sidebar.viewedTerminalTurns";
+  const viewed = shared(key) ?? {};
+  const turnOf = term => term.turn ?? term.status_ms;
+  const current = all.find(term => term.address === shown && term.state === "live" && term.status === "done");
+  const turn = current && turnOf(current);
+  if (turn != null && viewed[shown] !== turn && !checking()) {
+    const seen = Object.fromEntries(all.filter(term => term.state === "live" && term.status === "done" &&
+      turnOf(term) != null && viewed[term.address] === turnOf(term)).map(term => [term.address, turnOf(term)]));
+    setShared(key, { ...seen, [shown]: turn });
+  }
+  return all.map(term => term.state === "live" && term.status === "done" &&
+    (term === current || (turnOf(term) != null && viewed[term.address] === turnOf(term)))
+    ? { ...term, status: "idle" } : term);
+}
+
 function terminalGroups(sp, ps, all) {
   const spaceOfTab = new Map(sp.flatMap(s => (s.tabs ?? []).map(tab => [tab.id, s.id])));
   const spaceOfTerminal = new Map(ps.filter(p => p.terminal).map(p => [p.terminal, spaceOfTab.get(p.tab)]));
@@ -1276,8 +1294,8 @@ export default class Spaces extends View {
       this.finishedCountsDirty = true;
     }
     this.liveTerminalAddresses = live;
-    const tasks = collapsed ? null : terminalGroups(spaces(), panes(), all);
-    const shown = tasks ? focused()?.shown : null;
+    const shown = focused()?.shown;
+    const tasks = collapsed ? null : terminalGroups(spaces(), panes(), viewedTerminalStatuses(all, shown));
     const groups = this.machineGroups(collapsed, tasks?.byMachine.keys());
     this.activeAt = -1;
     let before = 0; // direct children before this machine, including guidance rows
@@ -1478,7 +1496,12 @@ export default class Spaces extends View {
           this.hoveredChild = hovered;
           cx.notify();
         })
-        .on_click(() => run("terminal.peek", { terminal: term.address }))
+        .on_click((_e, cx) => {
+          this.hoveredChild = null;
+          cx.notify();
+          run("terminal.peek", { terminal: term.address });
+          viewedTerminalStatuses(terminals(), term.address);
+        })
         .child(div().w(SPACE_STATUS_WIDTH).mr(statusGap).flex_none().flex().justify_center()
           .when(Boolean(status), el => el.child(mark(status, t))))
         .children(treeLines(lines, t))

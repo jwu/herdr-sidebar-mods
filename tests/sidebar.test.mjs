@@ -179,7 +179,7 @@ test("Agents shows a plain terminal as the parent of a reporting child agent", (
     panes: () => [{ pane: "p1", terminal: "t1" }, { pane: "p2", terminal: "t2", cwd: "/work/current-project" }],
     terminals: () => [
       { address: "t3", parent: "t2", name: "pi-test", state: "live", status: "idle" },
-      { address: "t4", parent: "t1", name: "nested-pi", state: "live", status: "working" },
+      { address: "t4", parent: "t1", name: "nested-pi", state: "live", status: "done" },
       { address: "t5", parent: "t2", name: "plain-shell", state: "live", status: null },
       { address: "t8", parent: "t5", name: "agent-through-shell", state: "live", status: "idle" },
       { address: "t9", parent: "t1", name: "plain-command", state: "live", status: null },
@@ -193,6 +193,8 @@ test("Agents shows a plain terminal as the parent of a reporting child agent", (
   assert.ok(textOf(byId(root, "ag-t2")).includes("current-project"));
   assert.ok(textOf(byId(root, "sub-t3")).includes("pi-test"));
   assert.ok(byId(root, "sub-t4"));
+  assert.ok([...nodes(byId(root, "sub-t4"))].some(n => uiState(n).calls.some(([method, color]) => method === "bg" && color === herdr.theme().done)),
+    "a finished turn uses the same Done dot as Spaces");
   assert.ok(byId(root, "sub-t8"), "an agent launched through a plain shell stays visible");
   assert.equal(byId(root, "sub-t5"), undefined);
   assert.equal(byId(root, "sub-t9"), undefined);
@@ -223,6 +225,44 @@ test("Agents shows a plain terminal as the parent of a reporting child agent", (
   herdr.layout = () => ({ id: "sidebar", size: { px: 76 } });
   root = instance.render(context);
   assert.ok(byId(root, "ag-t3"));
+});
+
+test("viewing a completed child clears that turn in both sidebars", () => {
+  const child = { address: "t2", parent: "t1", state: "live", status: "done", turn: 1 };
+  const values = new Map();
+  const host = {
+    spaces: () => [{ id: "project", name: "Project", tabs: [{ id: "tab" }] }],
+    panes: () => [{ pane: "p1", tab: "tab", terminal: "t1" }],
+    terminals: () => [child],
+    agents: () => [{ address: "t1", pane: "p1", space: "project", tab: "tab", status: "idle" }],
+    shared: key => values.get(key),
+    setShared: (key, value) => values.set(key, value),
+  };
+  const agents = init("sidebar-agents", host);
+  const spaces = init("sidebar-spaces", host);
+  agents.herdr.checking = () => false;
+  spaces.herdr.checking = () => false;
+  const hasDone = (panel, id) => [...nodes(byId(panel.instance.render(panel.context), id))].some(n =>
+    uiState(n).calls.some(([method, color]) => method === "bg" && color === panel.herdr.theme().done));
+  assert.equal(hasDone(agents, "sub-t2"), true);
+  assert.equal(hasDone(spaces, "task-t2"), true);
+  const peekFrom = (panel, rowId) => {
+    const render = () => panel.instance.render(panel.context);
+    uiState(byId(render(), rowId)).handlers.on_hover(true, panel.context);
+    let root = render();
+    assert.ok(byId(root, "close-child-t2"));
+    uiState(byId(root, rowId)).handlers.on_click({}, panel.context);
+    root = render();
+    assert.equal(byId(root, "close-child-t2"), undefined, "opening a peek clears hover even without mouse leave");
+  };
+  peekFrom(spaces, "task-t2");
+  assert.equal(hasDone(agents, "sub-t2"), false);
+  assert.equal(hasDone(spaces, "task-t2"), false);
+  child.turn++;
+  assert.equal(hasDone(agents, "sub-t2"), true);
+  assert.equal(hasDone(spaces, "task-t2"), true);
+  peekFrom(agents, "sub-t2");
+  assert.equal(hasDone(spaces, "task-t2"), false);
 });
 
 test("Spaces groups live pane-less terminals by their nearest ancestor space", () => {

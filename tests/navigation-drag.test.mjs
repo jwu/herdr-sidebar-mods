@@ -135,7 +135,7 @@ test("Agents and sub-agents keep click actions without exposing terminal path dr
     assert.equal(actions.at(-1)[0], "pane.focus");
     assert.equal(actions.at(-1)[1].pane, "p1");
     if (width >= 160) {
-      uiState(byId(root, "sub-vps/t3")).handlers.on_click();
+      uiState(byId(root, "sub-vps/t3")).handlers.on_click({}, p.context);
       assert.equal(actions.at(-1)[0], "terminal.peek");
       assert.equal(actions.at(-1)[1].terminal, "vps/t3");
     }
