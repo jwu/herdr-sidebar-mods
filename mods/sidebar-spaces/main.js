@@ -1484,10 +1484,9 @@ export default class Spaces extends View {
       const icon = iconPath && !term.program.tint
         ? image(iconPath).w(14).h(14).flex_none()
         : svg(iconPath || "mods/workspace-chrome/terminal.svg").size(14).flex_none().text_color(t.foreground);
-      const tip = [title, term.address, term.parent && `Parent: ${term.parent}`].filter(Boolean).join(" · ");
       const status = term.status === "error" ? "blocked" : term.status;
       return h_flex().id(`task-${term.address}`).h(26).my(1).pl(SPACE_PADDING).pr(6)
-        .items_center().rounded(4).text_size(12).text_color(t.muted).cursor_pointer().tooltip(tip)
+        .items_center().rounded(4).text_size(12).text_color(t.muted).cursor_pointer()
         .when(shown === term.address, el => el.bg(t.ansi5 + "33").text_color(t.foreground))
         .hover(s => s.bg(t.hover).text_color(t.foreground))
         .on_hover((on, cx) => {
