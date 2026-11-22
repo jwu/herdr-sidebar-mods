@@ -29,6 +29,12 @@ const SEG_GAP = 6;
 // 4.5pt in): rows stop exactly where it starts, so nothing sits under it and
 // nothing leaves a visible gap either.
 const SCROLL_GUTTER = 11;
+const AGENT_PADDING = 8;
+const AGENT_GAP = 8;
+const AGENT_STATUS_WIDTH = 16;
+const AGENT_ICON_WIDTH = 20;
+const TREE_STROKE_WIDTH = 1.5;
+const TREE_COLUMN_WIDTH = 13;
 function segmentBudgets(lengths, available) {
   const budgets = lengths.map((n) => (n > 0 ? 1 : 0));
   let left = available - budgets.reduce((a, b) => a + b, 0);
@@ -58,6 +64,18 @@ function toggleSidebar() {
 
 // Keep opening brackets/quotes in real titles, but drop Codex's status prefix.
 const clean = (s) => (s ?? "").replace(/^[^\p{L}\p{N}\p{Ps}\p{Pi}]+/u, "").replace(/^\[ [!.] \] /, "").trim();
+
+// Rows in both sidebars use 26px cells with 1px margins. Extend each
+// vertical stroke into those margins so adjacent rows meet.
+function treeLines(lines, t) {
+  const color = t.dim;
+  return lines.map(line => div().relative().w(9).h(26).mr(TREE_COLUMN_WIDTH - 9).flex_none()
+    .when(Boolean(line), el => el.child(div().absolute().left(0).top(-1).w_full()
+      .border_l(TREE_STROKE_WIDTH).border_color(color)
+      .when(line === "└", stroke => stroke.h(15).border_b(TREE_STROKE_WIDTH).rounded_bl(5))
+      .when(line !== "└", stroke => stroke.bottom(-1))))
+    .when(line === "├", el => el.child(div().absolute().left(TREE_STROKE_WIDTH).right(0).top(12.5).h(TREE_STROKE_WIDTH).bg(color))));
+}
 
 function leadPanes(all) {
   const leads = new Map();
@@ -347,6 +365,7 @@ export default class Agents extends View {
   init(_props, cx) {
     if (props()?.sortMenu) return;
     this.folded = new Set();
+    this.hoveredChild = null;
     this.scroll = ScrollHandle.new();
     this.activeAt = -1;
     // Each agent's last state and when it changed (ms), kept across restarts.
@@ -588,9 +607,17 @@ export default class Agents extends View {
     run("terminal.peek", { terminal: addr });
   }
 
+  // Skip plain terminals in the tree while keeping any agents they started.
+  agentChildren(all, addr) {
+    return all.filter(k => k.parent === addr && k.state === "live").flatMap(k =>
+      this.listed.has(k.address) || RANK[kidStatus(k, this.listed)]
+        ? [k]
+        : this.agentChildren(all, k.address));
+  }
+
   // Live sub-agents of `addr`, depth first, each with the tree lines in front of it.
   tree(all, addr, lead = []) {
-    const kids = all.filter((k) => k.parent === addr && k.state === "live");
+    const kids = this.agentChildren(all, addr);
     return kids.flatMap((k, i) => {
       const last = i === kids.length - 1;
       return [
@@ -600,15 +627,16 @@ export default class Agents extends View {
     });
   }
 
-  subRow(t, s, shown, compact) {
+  subRow(t, s, shown) {
     const k = s.t;
     const st = kidStatus(k, this.listed);
     const pic = icon(k.program, 14, t.foreground);
     const on = k.address === shown;
+    const treeInset = AGENT_GAP + (AGENT_ICON_WIDTH - TREE_STROKE_WIDTH) / 2;
+    const labelGap = AGENT_ICON_WIDTH + AGENT_GAP * 2 - treeInset - TREE_COLUMN_WIDTH;
     return h_flex()
       .id(`sub-${k.address}`)
-      .pl(39)
-      .pr(8)
+      .px(AGENT_PADDING)
       .rounded(4)
       .my(1)
       .h(26)
@@ -618,13 +646,31 @@ export default class Agents extends View {
       .text_size(12.5)
       .when(on, (el) => el.bg(t.ansi5 + "26"))
       .hover((s) => s.bg(t.hover))
+      .on_hover((on, cx) => {
+        const hovered = on ? k.address : this.hoveredChild === k.address ? null : this.hoveredChild;
+        if (hovered === this.hoveredChild) return;
+        this.hoveredChild = hovered;
+        cx.notify();
+      })
       .on_click(() => (this.listed.has(k.address) ? run("pane.focus", { terminal: k.address }) : this.peek(k.address)))
-      .children(s.lines.map(l => div().self_start().mt(-4).w(9).h(17).mr(4).flex_none()
-        .when(Boolean(l), el => el.border_l(1.5).border_color(t.input))
-        .when(l === "└" || l === "├", el => el.border_b(1.5).rounded_bl(6))))
-      .when(Boolean(pic), el => el.child(div().mr(8).child(pic)))
-      .child(div().flex_1().truncate().text_color(on ? t.foreground : t.muted).child(k.name || k.template || k.program?.name || k.address))
-      .child(this.status(t, { status: st }, compact));
+      .child(div().w(AGENT_STATUS_WIDTH).mr(treeInset).flex_none().flex().justify_center()
+        .child(this.status(t, { status: st }, true)))
+      .children(treeLines(s.lines, t))
+      .child(h_flex().ml(labelGap).flex_1().min_w(0).items_center()
+        .when(Boolean(pic), el => el.child(div().mr(8).flex_none().child(pic)))
+        .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(k.name || k.template || k.program?.name || k.address)))
+      .child(div().ml(4).size(18).flex_none()
+        .when(this.hoveredChild === k.address, el => el.child(div().id(`close-child-${k.address}`)
+          .size_full().flex().items_center().justify_center().rounded(4)
+          .text_color(t.dim).cursor_pointer().tooltip("Close terminal")
+          .hover(s => s.bg(t.hover).text_color(t.foreground))
+          .on_click((_e, cx) => {
+            cx.stop_propagation();
+            this.hoveredChild = null;
+            run("terminal.kill", { terminal: k.address });
+            cx.notify();
+          })
+          .child(svg("mods/workspace-chrome/x.svg").size(12)))));
   }
 
   // compact: a ! for blocked where a header already says "Needs you".
@@ -645,12 +691,66 @@ export default class Agents extends View {
     const collapsed = narrow();
     const px = sidebarPx();
     const sort = sortOf();
-    let list = agents();
-    this.updateBadge(list);
+    let list = [...agents()];
     this.listed = new Map(list.map((a) => [a.address, a.status]));
     const all = terminals();
-    if (!checking()) this.migratePins(all);
     const focus = focused();
+    // `agents()` requires a pane. Use core reports for agents that have
+    // neither a pane nor a row in an attached agent's tree.
+    const ps = panes();
+    const paneByTerminal = new Map(ps.filter(p => p.terminal).map(p => [p.terminal, p]));
+    const terminalByAddress = new Map(all.map(term => [term.address, term]));
+    const nestedUnderPane = new Set(list.flatMap(a => this.tree(all, a.address).map(s => s.t.address)));
+    for (const term of all) {
+      const status = term.status === "error" ? "blocked" : term.status;
+      if (term.state !== "live" || !RANK[status] || paneByTerminal.has(term.address) ||
+          this.listed.has(term.address) || nestedUnderPane.has(term.address)) continue;
+      list.push({
+        address: term.address,
+        status,
+        title: term.name || term.template || term.title || term.program?.name || term.address,
+        program: term.program,
+        cwd: term.cwd,
+        seq: term.status_ms ?? term.created_ms ?? 0,
+        pinned: Boolean(term.labels?.["herdr.pinned"]),
+        focused: focus?.shown === term.address,
+      });
+    }
+    this.updateBadge(list);
+    const agentAddresses = new Set(list.map(a => a.address));
+    const modelSpaces = spaces();
+    const spaceByTab = new Map(modelSpaces.flatMap(s => s.tabs.map(tab => [tab.id, s])));
+    if (!collapsed) {
+      const parents = new Map();
+      for (const a of list) {
+        const address = terminalByAddress.get(a.address)?.parent;
+        if (!address || agentAddresses.has(address) || nestedUnderPane.has(a.address) || parents.has(address)) continue;
+        const parent = terminalByAddress.get(address);
+        const pane = paneByTerminal.get(address);
+        if (parent?.state !== "live" && !pane) continue;
+        const space = spaceByTab.get(pane?.tab);
+        const program = parent?.program ?? pane?.program;
+        const name = parent?.name || program?.name || parent?.foreground?.name || "Terminal";
+        parents.set(address, {
+          address, pane: pane?.pane, tab: pane?.tab, space: space?.id,
+          space_name: space?.name, program, title: `${name} · ${address}`,
+          cwd: parent?.cwd, seq: a.seq, focused: pane?.focused,
+          terminalParent: true, childAddress: a.address,
+        });
+      }
+      for (const parent of parents.values()) {
+        // A higher terminal parent already shows this branch's agents.
+        const seen = new Set([parent.address]);
+        let ancestor = terminalByAddress.get(parent.address)?.parent;
+        while (ancestor && !seen.has(ancestor) && terminalByAddress.get(ancestor)?.state === "live") {
+          if (parents.has(ancestor) || agentAddresses.has(ancestor)) break;
+          seen.add(ancestor);
+          ancestor = terminalByAddress.get(ancestor)?.parent;
+        }
+        if (!parents.has(ancestor) && !agentAddresses.has(ancestor)) list.push(parent);
+      }
+    }
+    if (!checking()) this.migratePins(all);
     const active = focus?.shown ?? focus?.terminal ?? focus?.agent ?? list.find(a => a.focused)?.address ?? null;
     const shown = active;
     // Only a new navigation unfolds the target. A manually folded current group
@@ -668,11 +768,14 @@ export default class Agents extends View {
     const byPriority = sort.id === "priority";
     const urgency = new Map(list.map((a) => [a.address, Math.max(this.rank(a), ...this.tree(all, a.address).map((s) => RANK[kidStatus(s.t, this.listed)] ?? 0))]));
     const rankOf = (a) => urgency.get(a.address);
-    if (byPriority) list = [...list].sort((x, y) => rankOf(y) - rankOf(x) || this.since(y) - this.since(x) || y.seq - x.seq);
+    const sinceOf = (a) => a.terminalParent ? this.since({ address: a.childAddress }) : this.since(a);
+    if (byPriority) list = [...list].sort((x, y) => rankOf(y) - rankOf(x) || sinceOf(y) - sinceOf(x) || y.seq - x.seq);
     const pinned = list.filter((a) => a.pinned);
     const rest = list.filter((a) => !a.pinned);
     list = [...pinned, ...rest];
-    if (!checking()) setAgentOrder(list.map((a) => a.address));
+    if (!checking()) setAgentOrder(list.flatMap(a => a.terminalParent
+      ? this.tree(all, a.address).map(s => s.t.address).filter(address => agentAddresses.has(address))
+      : [a.address]));
 
     let offset = 0;
     this.activeAt = -1;
@@ -686,10 +789,10 @@ export default class Agents extends View {
       if (navigated && subs.some(s => s.t.address === active)) this.folded.delete(a.address);
       const r = indexed(row(a, i, subs), a.address);
       if (this.folded.has(a.address)) return [r];
-      return [r, ...subs.map(s => indexed(this.subRow(t, s, shown, byPriority), s.t.address))];
+      return [r, ...subs.map(s => indexed(this.subRow(t, s, shown), s.t.address))];
     };
 
-    // The fold chevron; folded, the count too, colored by the most urgent one.
+    // When folded, show the child count and use the most urgent child's color.
     const fold = (a, subs) => {
       const sts = subs.map((s) => kidStatus(s.t, this.listed));
       const top = sts.reduce((m, s) => ((RANK[s] ?? 0) > (RANK[m] ?? 0) ? s : m), null);
@@ -697,13 +800,14 @@ export default class Agents extends View {
       return div()
         .id(`fold-${a.address}`)
         .h(18)
+        .flex_none()
         .px(3)
         .gap(3)
         .flex()
         .items_center()
         .rounded(4)
         .text_size(11)
-        .text_color(open ? t.dim : (t[top] ?? t.dim))
+        .text_color(open ? t.muted : (t[top] ?? t.muted))
         .cursor_pointer()
         .hover((s) => s.bg(t.hover).text_color(t.foreground))
         .on_click((_e, cx) => {
@@ -712,15 +816,14 @@ export default class Agents extends View {
           cx.notify();
         })
         .child(svg(`mods/workspace-chrome/chevron-${open ? "down" : "right"}.svg`).size(11).flex_none())
-        .when(!open, (el) => el.child(String(subs.length)));
+        .when(!open, el => el.child(String(subs.length)));
     };
 
-    // Read the pane snapshot once: every host read copies the whole list into JS.
-    const ps = panes();
     const leads = leadPanes(ps);
     const cwdOf = new Map(ps.map((p) => [p.pane, p.cwd]));
-    const tabs = new Map(spaces().flatMap(s => s.tabs).map(tab => [tab.id, tab]));
+    const tabs = new Map(modelSpaces.flatMap(s => s.tabs).map(tab => [tab.id, tab]));
     const labels = new Map(list.map(a => {
+      if (a.terminalParent) return [a.address, a.title];
       const tab = tabs.get(a.tab);
       const many = tabCounts.get(a.tab) > 1;
       return [a.address, tab ? title(many ? { ...tab, named: false } : tab, many ? a : leads.get(a.tab)) : (a.title || a.program?.name || "")];
@@ -728,7 +831,12 @@ export default class Agents extends View {
     const label = (a) => labels.get(a.address);
 
     const row = (a, i, subs = []) => {
-      const pic = icon(a.program, 20, t.foreground);
+      const pic = icon(a.program, AGENT_ICON_WIDTH, t.foreground);
+      const open = () => {
+        if (a.pane) run("pane.focus", { pane: a.pane });
+        else if (a.terminalParent) this.peek(a.address);
+        else run("terminal.keep", { terminal: a.address, place: "tab" });
+      };
       // An agent on another machine (`vps/t7`) says which.
       const machine = a.address.includes("/") ? a.address.split("/")[0] : null;
       if (collapsed) {
@@ -740,7 +848,8 @@ export default class Agents extends View {
           .items_center()
           .gap(4)
           .hover((s) => s.bg(t.hover))
-          .on_click(() => run("pane.focus", { pane: a.pane }))
+          .on_click(open)
+          .tooltip(label(a))
           .child(div().flex_1().min_w(0).whitespace_nowrap().text_right().text_color(t.muted).child(String(i + 1)))
           .child(h_flex().w(14).flex_none().items_center().justify_center().child(this.status(t, a, true)));
       }
@@ -767,8 +876,8 @@ export default class Agents extends View {
       // The state and the program sit between the two lines, both centred on the
       // whole row; the first line is the folder it works in, the second the
       // machine it runs on.
-      const cwd = cwdOf.get(a.pane) ?? null;
-      const folder = (cwd && base(cwd)) || a.space_name || label(a);
+      const cwd = cwdOf.get(a.pane) ?? a.cwd ?? null;
+      const folder = a.pane || a.terminalParent ? base(cwd) || cwd || a.space_name || label(a) : label(a);
       const g = cwd ? this.git[gitKey(machine, cwd)] : null;
       const remote = g?.upstream?.includes("/") ? `\u25b8 ${g.upstream.slice(0, g.upstream.indexOf("/"))}` : "";
       const tail = [g?.branch, remote].filter(Boolean).join(" ");
@@ -783,11 +892,11 @@ export default class Agents extends View {
       ], Math.max(0, px - 88));
       return h_flex()
         .id(`ag-${a.address}`)
-        .px(8)
+        .px(AGENT_PADDING)
         .py(3)
         .my(1)
         .flex_none()
-        .gap(8)
+        .gap(AGENT_GAP)
         .items_center()
         .rounded(4)
         .when(a.focused, (el) => el.bg(t.ansi5 + "33"))
@@ -798,20 +907,22 @@ export default class Agents extends View {
           else if (this.hovered === a.address) this.hovered = null;
           cx.notify();
         })
-        .on_click(() => run("pane.focus", { pane: a.pane }))
-        .child(div().w(16).flex_none().flex().justify_center().child(this.status(t, a, true)))
+        .on_click(open)
+        .when(a.terminalParent, el => el.tooltip([cwd, a.title].filter(Boolean).join(" · ")))
+        .child(div().w(AGENT_STATUS_WIDTH).flex_none().flex().justify_center().child(this.status(t, a, true)))
         .when(Boolean(pic), (el) => el.child(div().id(`agent-fold-${a.address}`).flex_none()
           .when(subs.length > 0, (el) => el.on_click((_e, cx) => {
             cx.stop_propagation();
             this.folded.has(a.address) ? this.folded.delete(a.address) : this.folded.add(a.address);
             cx.notify();
           })).child(pic)))
-        .when(!pic, (el) => el.child(div().w(20).flex_none()))
+        .when(!pic, (el) => el.child(div().w(AGENT_ICON_WIDTH).flex_none()))
         .child(v_flex().flex_1().min_w(0).gap(1)
           .child(h_flex().h(18).flex_none().gap(6).items_center()
-            .child(div().flex_1().min_w(0).truncate().text_color(idle ? t.muted : t.foreground).child(folder))
-            .when(subs.length > 0, (el) => el.child(fold(a, subs)))
-            .when(this.hovered === a.address, (el) => el.child(pin))
+            .child(h_flex().flex_1().min_w(0).gap(3).items_center()
+              .child(div().min_w(0).truncate().text_color(idle ? t.muted : t.foreground).child(folder))
+              .when(subs.length > 0, el => el.child(fold(a, subs))))
+            .when(!a.terminalParent && this.hovered === a.address, (el) => el.child(pin))
             .when(this.hovered !== a.address && Boolean(when), (el) => el.child(div().flex_none().text_size(11).text_color(t.dim).child(duration(now - when)))))
           .child(h_flex().h(16).w_full().min_w(0).gap(4).items_center()
             .child(svg(`mods/workspace-chrome/${machine ? "server" : "monitor"}.svg`).size(12).flex_none().text_color(t.dim))
@@ -824,8 +935,9 @@ export default class Agents extends View {
     for (const a of rest) {
       const r = rankOf(a) || RANK.idle;
       const id = byPriority ? `sec-${r}` : `sp-${a.space}`;
-      if (groups.at(-1)?.id === id) groups.at(-1).members.push(a);
-      else groups.push({ id, label: byPriority ? SECTION[r] : a.space_name || "", status: byPriority ? SECTION_STATUS[r] : null, members: [a] });
+      const group = groups.find(g => g.id === id);
+      if (group) group.members.push(a);
+      else groups.push({ id, label: byPriority ? SECTION[r] : a.space_name || "Unattached", status: byPriority ? SECTION_STATUS[r] : null, members: [a] });
     }
 
     // A group's header; it folds the group. Folded, it says how many and the most urgent state.

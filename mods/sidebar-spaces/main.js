@@ -4,10 +4,10 @@
 // its first terminal is in now, only where unusual: branch, ahead/behind. Agent state lives in the agents list, not here. Click to
 // switch, right-click for its menu, drag to reorder.
 
-import { View, div, svg } from "gpui-kit";
+import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
 import * as fs from "fs/promises";
-import { spaces, machines, panes, run, openOverlay, exec, hc, appHome, theme, shared, setShared, watchFolder, window, layout, nextCommand, checking } from "herdr";
+import { spaces, machines, panes, terminals, focused, run, openOverlay, exec, hc, appHome, theme, shared, setShared, watchFolder, window, layout, nextCommand, checking } from "herdr";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -28,6 +28,20 @@ function place(s, ps) {
   return ps.find((p) => tabs.has(p.tab) && p.cwd)?.cwd || s.folder;
 }
 const rowHeight = ({ tree }) => (tree ? 28 : 30);
+const SPACE_MARGIN = 20;
+const SPACE_PADDING = 8;
+const SPACE_GAP = 9;
+const SPACE_STATUS_WIDTH = 14;
+const WORKTREE_INDENT = 22;
+const FOLDER_WIDTH = 16;
+const BRANCH_WIDTH = 13;
+const TREE_STROKE_WIDTH = 1.5;
+const TREE_COLUMN_WIDTH = 13;
+const PORT_ROW_HEIGHT = 18;
+
+const spaceTreeInset = worktree => SPACE_PADDING + SPACE_STATUS_WIDTH + SPACE_GAP
+  + (worktree ? WORKTREE_INDENT : 0)
+  + ((worktree ? BRANCH_WIDTH : FOLDER_WIDTH) - TREE_STROKE_WIDTH) / 2;
 // A row shares one line between its name and its git tail: every segment keeps
 // one glyph, then they grow in turn until the line is full, so a long name
 // cannot crowd the branch out. Sheprd budgets its sidebar labels the same way.
@@ -60,6 +74,71 @@ const RAIL_CELL = 32;
 const SCROLL_GUTTER = 11;
 const railCell = (el) => h_flex().flex_none().justify_center().child(el);
 const where = (s, ps) => JSON.stringify([s.machine ?? null, place(s, ps)]);
+
+function terminalGroups(sp, ps, all) {
+  const spaceOfTab = new Map(sp.flatMap(s => (s.tabs ?? []).map(tab => [tab.id, s.id])));
+  const spaceOfTerminal = new Map(ps.filter(p => p.terminal).map(p => [p.terminal, spaceOfTab.get(p.tab)]));
+  const byAddress = new Map(all.map(term => [term.address, term]));
+  const bySpace = new Map();
+  const byMachine = new Map();
+  for (const term of all) {
+    if (term.state !== "live" || spaceOfTerminal.has(term.address)) continue;
+    const seen = new Set([term.address]);
+    let parent = term.parent;
+    let space;
+    while (parent && !seen.has(parent)) {
+      space = spaceOfTerminal.get(parent);
+      if (space) break;
+      seen.add(parent);
+      parent = byAddress.get(parent)?.parent;
+    }
+    const groups = space ? bySpace : byMachine;
+    const key = space ?? machineOfTerminal(term.address);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(term);
+  }
+  return { bySpace, byMachine };
+}
+
+function machineOfTerminal(address) {
+  const slash = address.indexOf("/");
+  return slash < 0 ? null : address.slice(0, slash);
+}
+
+// Rows in both sidebars use 26px cells with 1px margins. Extend each
+// vertical stroke into those margins so adjacent rows meet.
+function treeLines(lines, t) {
+  const color = t.dim;
+  return lines.map(line => div().relative().w(9).h(26).mr(TREE_COLUMN_WIDTH - 9).flex_none()
+    .when(Boolean(line), el => el.child(div().absolute().left(0).top(-1).w_full()
+      .border_l(TREE_STROKE_WIDTH).border_color(color)
+      .when(line === "└", stroke => stroke.h(15).border_b(TREE_STROKE_WIDTH).rounded_bl(5))
+      .when(line !== "└", stroke => stroke.bottom(-1))))
+    .when(line === "├", el => el.child(div().absolute().left(TREE_STROKE_WIDTH).right(0).top(12.5).h(TREE_STROKE_WIDTH).bg(color))));
+}
+
+function terminalTree(terms) {
+  const addresses = new Set(terms.map(term => term.address));
+  const children = new Map();
+  for (const term of terms) {
+    const parent = addresses.has(term.parent) ? term.parent : null;
+    if (!children.has(parent)) children.set(parent, []);
+    children.get(parent).push(term);
+  }
+  const rows = [];
+  const visited = new Set();
+  const visit = (term, lead, last) => {
+    if (visited.has(term.address)) return;
+    visited.add(term.address);
+    rows.push({ term, lines: [...lead, last ? "└" : "├"] });
+    const kids = children.get(term.address) ?? [];
+    kids.forEach((child, i) => visit(child, [...lead, last ? "" : "│"], i === kids.length - 1));
+  };
+  const roots = children.get(null) ?? [];
+  roots.forEach((root, i) => visit(root, [], i === roots.length - 1));
+  for (const term of terms) visit(term, [], true); // Keep any cyclic parent links reachable.
+  return rows;
+}
 
 // --- shared git cache: keep this block identical in both sidebar mods ---
 // The Spaces and Agents panels show the same places, so they keep one answer per
@@ -503,6 +582,14 @@ export default class Spaces extends View {
     let folded;
     try { folded = JSON.parse(localStorage.getItem("machines.folded") ?? "[]"); } catch {}
     this.folded = new Set(Array.isArray(folded) ? folded.filter(m => m === null || typeof m === "string") : []);
+    this.foldedTerminals = new Set();
+    this.clearingFinished = new Set();
+    this.finishedCounts = new Map();
+    this.finishedRevision = 0;
+    this.liveTerminalAddresses = null;
+    this.finishedCountsDirty = false;
+    this.refreshingFinishedCounts = false;
+    this.hoveredChild = null;
     // The machine order the user dragged into place, by name (null is this one).
     // Machines it never lists keep the catalog's order after the arranged ones.
     let order;
@@ -540,6 +627,7 @@ export default class Spaces extends View {
   }
 
   checkNew(cx) {
+    if (this.finishedCountsDirty) this.refreshFinishedCounts(cx);
     const now = Date.now();
     const sp = spaces();
     const ps = panes();
@@ -622,9 +710,36 @@ export default class Spaces extends View {
   }
 
   refreshMachines(cx) {
+    this.refreshFinishedCounts(cx);
     cx.spawn(async cx => {
-      try { const r = await hc(["machine", "ls", "--json"]); if (r.code === 0) this.machines = (JSON.parse(r.stdout).machines ?? []).filter((m) => !m.temporary); } catch {}
+      try {
+        const result = await hc(["machine", "ls", "--json"]);
+        if (result.code === 0) this.machines = JSON.parse(result.stdout).machines.filter(m => !m.temporary);
+      } catch {}
       cx.notify();
+    });
+  }
+
+  refreshFinishedCounts(cx) {
+    if (this.refreshingFinishedCounts) return;
+    this.refreshingFinishedCounts = true;
+    this.finishedCountsDirty = false;
+    const revision = this.finishedRevision;
+    cx.spawn(async cx => {
+      try {
+        const result = await hc(["ls", "--all", "--json"]);
+        if (result.code !== 0 || revision !== this.finishedRevision) return;
+        const counts = new Map();
+        for (const term of JSON.parse(result.stdout).terminals) {
+          if (term.state !== "finished") continue;
+          const machine = machineOfTerminal(term.address);
+          counts.set(machine, (counts.get(machine) ?? 0) + 1);
+        }
+        this.finishedCounts = counts;
+        cx.notify();
+      } catch {} finally {
+        this.refreshingFinishedCounts = false;
+      }
     });
   }
 
@@ -870,6 +985,45 @@ export default class Spaces extends View {
     return machine?.state === "unreachable" && /^a different core answers there \("[^"]+"\)$/.test(machine.why ?? "");
   }
 
+  clearFinished(machine, cx) {
+    if (this.clearingFinished.has(machine)) return;
+    this.clearingFinished.add(machine);
+    cx.notify();
+    cx.spawn(async cx => {
+      const label = machine ?? "Local";
+      try {
+        const result = await hc(["ls", "--all", "--json"]);
+        if (result.code !== 0) throw new Error("Could not list terminals");
+        const { terminals: records, machines: peers } = JSON.parse(result.stdout);
+        if (machine && !peers.some(peer => peer.name === machine && peer.state === "connected")) {
+          throw new Error("Machine is disconnected");
+        }
+        const finished = records.filter(term => term.state === "finished" && machineOfTerminal(term.address) === machine);
+        let removed = 0;
+        for (const term of finished) {
+          try {
+            const reply = await hc(["rm", term.address, "--json"]);
+            if (reply.code === 0) removed++;
+          } catch { /* Continue clearing other records if one request fails. */ }
+        }
+        const failed = finished.length - removed;
+        this.finishedRevision++;
+        this.finishedCounts.set(machine, failed);
+        window().push_toast({
+          title: failed ? `${label}: removed ${removed}, could not remove ${failed}`
+            : removed ? `${label}: removed ${removed} finished ${removed === 1 ? "terminal" : "terminals"}`
+            : `${label}: no finished terminals`,
+          level: failed ? "error" : "info",
+        });
+      } catch (error) {
+        window().push_toast({ title: `${label}: ${error.message}`, level: "error" });
+      } finally {
+        this.clearingFinished.delete(machine);
+        cx.notify();
+      }
+    });
+  }
+
   reconnect(machine, cx) {
     const name = machine.name;
     if (this.reconnecting[name]?.busy) return;
@@ -1093,9 +1247,10 @@ export default class Spaces extends View {
     localStorage.setItem("machines.order", JSON.stringify(next));
   }
 
-  machineGroups(collapsed) {
+  machineGroups(collapsed, taskMachines = []) {
     const rows = this.ordered();
-    return this.arranged(this.machineNames()).map((m) => {
+    const names = [...new Set([...this.machineNames(), ...taskMachines])];
+    return this.arranged(names).map((m) => {
       const repair = this.reconnecting[m];
       const machine = this.machines.find(k => k.name === m) ?? repair?.machine;
       const rebuilt = this.rebuilt(machine) || !!repair;
@@ -1115,15 +1270,30 @@ export default class Spaces extends View {
   // The rows, under a header per machine. The header stays for this computer
   // alone, so a single-machine panel keeps showing its load.
   grouped(t, collapsed) {
-    const groups = this.machineGroups(collapsed);
+    const all = terminals();
+    const live = new Set(all.filter(term => term.state === "live").map(term => term.address));
+    if (this.liveTerminalAddresses && [...this.liveTerminalAddresses].some(address => !live.has(address))) {
+      this.finishedCountsDirty = true;
+    }
+    this.liveTerminalAddresses = live;
+    const tasks = collapsed ? null : terminalGroups(spaces(), panes(), all);
+    const shown = tasks ? focused()?.shown : null;
+    const groups = this.machineGroups(collapsed, tasks?.byMachine.keys());
     this.activeAt = -1;
     let before = 0; // direct children before this machine, including guidance rows
     let number = 0; // one-based space number in the rail
     // A space draws as its row and, under it, the ports its servers listen on;
     // both sit inside one selection box (see `spaceBox`).
-    const draw = (r) => collapsed
-      ? this.compact(r, t, ++number)
-      : this.spaceBox(r, t);
+    const draw = (r) => {
+      if (collapsed) return this.compact(r, t, ++number);
+      const terms = tasks.bySpace.get(r.w.id);
+      const id = `space-${r.w.id}`;
+      const box = this.spaceBox(r, t, terms?.length ?? 0);
+      if (!terms?.length) return box;
+      return v_flex().flex_none().child(box)
+        .child(v_flex().id(`terminal-section-${id}`).ml(SPACE_MARGIN).mr(SCROLL_GUTTER).flex_none()
+          .children(this.terminalRows(id, terms, t, shown, r.tree)));
+    };
     const loading = m => {
       const layout = machines().find(k => k.name === m)?.layout;
       return layout === "loading" || (!layout && this.machines.some(k => k.name === m && k.state === "connected"))
@@ -1160,11 +1330,23 @@ export default class Spaces extends View {
         .on_click((_e, cx) => { cx.stop_propagation(); this.toggleCup(cx); })
         .child(svg(`mods/sidebar-spaces/${this.cup === "on" ? "coffee-full" : "coffee"}.svg`)
           .size(13).text_color(this.cup === "on" ? t.ansi3 : this.cup === "busy" ? t.dim : t.muted));
+      const count = this.finishedCounts.get(m) ?? 0;
+      const busy = this.clearingFinished.has(m);
+      const trash = () => h_flex().id(`machine-clear-${m ?? "local"}`).h(18).px(3).gap(3).items_center().flex_none()
+        .rounded(4).text_size(11).text_color(count ? t.muted : t.dim).cursor_pointer()
+        .hover(s => s.bg(t.hover).text_color(t.foreground))
+        .tooltip(`Remove ${count} finished ${count === 1 ? "terminal record" : "terminal records"} and saved output on this machine`)
+        .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+        .on_click((_e, cx) => { cx.stop_propagation(); this.clearFinished(m, cx); })
+        .child(svg(`mods/${busy ? "workspace-chrome/spinner" : "sidebar-spaces/trash"}.svg`).size(13).flex_none()
+          .when(busy, el => el.spin(900)))
+        .child(String(count));
       const row1 = h_flex().gap(7).items_center()
         .child(icon())
         .child(div().flex_1().min_w_0().flex().items_center().gap(6)
           .child(div().min_w_0().truncate().child(m ?? "Local"))
-          .when(m === null && this.cupHere, el => el.child(cup())))
+          .when(m === null && this.cupHere, el => el.child(cup()))
+          .when(connected && !rebuilt, el => el.child(trash())))
         .when(machine?.keeps_running_after_logout === false, el => el.child(warning()))
         .when(!connected && !rebuilt && !login, el => el.child(div().flex_none().child((machine?.state ?? "asleep").replace(/_/g, " "))))
         .when(rebuilt, el => el.child(h_flex().flex_none().gap(3).items_center()
@@ -1241,10 +1423,80 @@ export default class Spaces extends View {
             .on_click((_e, cx) => { cx.stop_propagation(); cx.write_to_clipboard(login); this.copiedLogin = login; cx.notify(); })
             .child(this.copiedLogin === login ? "Copied" : "Copy")))] : [];
       const items = [cell(head), ...guidance, ...(folded ? [] : rows.length ? rows.map(draw) : [loading(m) ? loadingRow(m) : cell(empty)])];
+      const unattached = tasks?.byMachine.get(m);
+      if (!folded && unattached?.length) {
+        items.push(this.unattachedSection(`machine-${m ?? "local"}`, unattached, t, shown));
+      }
       const first = rows.findIndex(r => r.w.active);
       if (first >= 0) this.activeAt = before + 1 + guidance.length + first;
       before += items.length;
       return items;
+    });
+  }
+
+  unattachedSection(id, terms, t, shown) {
+    const open = !this.foldedTerminals.has(id);
+    return v_flex().id(`terminal-section-${id}`).ml(SPACE_MARGIN).mr(SCROLL_GUTTER).flex_none()
+      .child(h_flex().id(`terminals-${id}`).h(rowHeight({ tree: false })).my(1).px(SPACE_PADDING)
+        .gap(SPACE_GAP).items_center().rounded(4).flex_none()
+        .text_size(13).text_color(t.muted).cursor_pointer().hover(s => s.bg(t.hover))
+        .on_click((_e, cx) => this.toggleTerminals(id, cx))
+        .child(h_flex().w(SPACE_STATUS_WIDTH).flex_none().items_center().justify_center()
+          .child(svg(`mods/workspace-chrome/chevron-${open ? "down" : "right"}.svg`).size(11).text_color(t.muted)))
+        .child(svg("mods/sidebar-spaces/unplug.svg").size(FOLDER_WIDTH).flex_none().text_color(t.dim))
+        .child(open ? "Unattached" : `Unattached ${terms.length}`))
+      .children(this.terminalRows(id, terms, t, shown));
+  }
+
+  toggleTerminals(id, cx) {
+    if (this.foldedTerminals.has(id)) this.foldedTerminals.delete(id);
+    else this.foldedTerminals.add(id);
+    cx.notify();
+  }
+
+  terminalRows(id, terms, t, shown, worktree = false) {
+    if (this.foldedTerminals.has(id)) return [];
+    const iconWidth = worktree ? BRANCH_WIDTH : FOLDER_WIDTH;
+    const statusGap = spaceTreeInset(worktree) - SPACE_PADDING - SPACE_STATUS_WIDTH;
+    const labelGap = SPACE_GAP + (iconWidth + TREE_STROKE_WIDTH) / 2 - TREE_COLUMN_WIDTH;
+    return terminalTree(terms).map(({ term, lines }) => {
+      const program = term.foreground?.name || term.program?.name || term.argv?.[0]?.split(/[\\/]/).pop();
+      const title = term.name || term.template || program || term.address;
+      const iconPath = term.program?.icon;
+      const icon = iconPath && !term.program.tint
+        ? image(iconPath).w(14).h(14).flex_none()
+        : svg(iconPath || "mods/workspace-chrome/terminal.svg").size(14).flex_none().text_color(t.foreground);
+      const tip = [title, term.address, term.parent && `Parent: ${term.parent}`].filter(Boolean).join(" · ");
+      const status = term.status === "error" ? "blocked" : term.status;
+      return h_flex().id(`task-${term.address}`).h(26).my(1).pl(SPACE_PADDING).pr(6)
+        .items_center().rounded(4).text_size(12).text_color(t.muted).cursor_pointer().tooltip(tip)
+        .when(shown === term.address, el => el.bg(t.ansi5 + "33").text_color(t.foreground))
+        .hover(s => s.bg(t.hover).text_color(t.foreground))
+        .on_hover((on, cx) => {
+          const hovered = on ? term.address : this.hoveredChild === term.address ? null : this.hoveredChild;
+          if (hovered === this.hoveredChild) return;
+          this.hoveredChild = hovered;
+          cx.notify();
+        })
+        .on_click(() => run("terminal.peek", { terminal: term.address }))
+        .child(div().w(SPACE_STATUS_WIDTH).mr(statusGap).flex_none().flex().justify_center()
+          .when(Boolean(status), el => el.child(mark(status, t))))
+        .children(treeLines(lines, t))
+        .child(h_flex().ml(labelGap).flex_1().min_w(0).gap(8).items_center()
+          .child(icon)
+          .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(title)))
+        .child(div().ml(4).size(18).flex_none()
+          .when(this.hoveredChild === term.address, el => el.child(div().id(`close-child-${term.address}`)
+            .size_full().flex().items_center().justify_center().rounded(4)
+            .text_color(t.dim).cursor_pointer().tooltip("Close terminal")
+            .hover(s => s.bg(t.hover).text_color(t.foreground))
+            .on_click((_e, cx) => {
+              cx.stop_propagation();
+              this.hoveredChild = null;
+              run("terminal.kill", { terminal: term.address });
+              cx.notify();
+            })
+            .child(svg("mods/workspace-chrome/x.svg").size(12)))));
     });
   }
 
@@ -1256,7 +1508,7 @@ export default class Spaces extends View {
   // lowest priority first, so the name stays and the tail gives way.
   // `fixed` parts keep their own width and color at the end of the line (ahead
   // and behind counts); the rest share the room by budget.
-  nameLine(parts, room) {
+  nameLine(parts, room, fold) {
     const MIN_NAME = 8;
     const fixed = parts.filter((p) => p.fixed && p.text);
     let kept = parts.filter((p) => !p.fixed && p.text);
@@ -1273,19 +1525,40 @@ export default class Spaces extends View {
       .gap(SEG_GAP)
       .items_center()
       .children([
-        ...kept.map((p, i) => div()
-          .when(i === 0, (el) => el.flex_1().min_w(0))
-          .when(i > 0, (el) => el.flex_none())
-          .truncate()
-          .text_size(p.size ?? 11.5).text_color(p.color).child(i === 0 ? p.text : fit(p.text, widths[i]))),
+        ...kept.map((p, i) => {
+          const text = div().min_w(0).truncate().text_size(p.size ?? 11.5).text_color(p.color)
+            .child(i === 0 ? p.text : fit(p.text, widths[i]));
+          return i === 0
+            ? h_flex().flex_1().min_w(0).gap(3).items_center().child(text)
+              .when(Boolean(fold), el => el.child(fold))
+            : text.flex_none();
+        }),
         ...fixed.map((p) => div().flex_none().text_size(p.size ?? 11.5).text_color(p.color).child(p.text)),
       ]);
   }
 
-  row({ w, i, g, tree }, t) {
+  row({ w, i, g, tree }, t, terminalCount) {
     const px = find(layout(), "sidebar")?.size?.px ?? Infinity;
-    // Everything the row shows up to the status slot and the folder icon.
-    const room = Math.max(0, px - (tree ? 118 : 96));
+    const id = `space-${w.id}`;
+    const open = !this.foldedTerminals.has(id);
+    const fold = terminalCount > 0 ? h_flex().id(`terminals-${id}`).h(18).px(3).gap(3)
+      .flex_none().items_center().rounded(4).cursor_pointer().text_size(11).text_color(t.muted)
+      .hover(s => s.bg(t.hover).text_color(t.foreground))
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .on_mouse_up("left", (_e, cx) => {
+        cx.stop_propagation();
+        this.pressed = null;
+        this.over = null;
+        cx.notify();
+      })
+      .on_click((_e, cx) => {
+        cx.stop_propagation();
+        this.toggleTerminals(id, cx);
+      })
+      .child(svg(`mods/workspace-chrome/chevron-${open ? "down" : "right"}.svg`).size(11).flex_none())
+      .when(!open, el => el.child(String(terminalCount))) : null;
+    const foldWidth = fold ? 20 + (open ? 0 : 3 + String(terminalCount).length * 7) : 0;
+    const room = Math.max(0, px - (tree ? 118 : 96) - foldWidth);
     const remote = g?.upstream?.includes("/") ? `\u25b8 ${g.upstream.slice(0, g.upstream.indexOf("/"))}` : "";
     // The tail reads as one segment, so the name keeps the larger share; the
     // counts keep their own colors, green ahead and red behind as starship's.
@@ -1297,12 +1570,12 @@ export default class Spaces extends View {
       ...(g?.conflicts > 0 ? [{ text: `\u2718${g.conflicts}`, color: t.ansi1, fixed: true }] : []),
       ...(g?.ahead > 0 ? [{ text: `\u2191${g.ahead}`, color: t.ansi2, fixed: true }] : []),
       ...(g?.behind > 0 ? [{ text: `\u2193${g.behind}`, color: t.ansi1, fixed: true }] : []),
-    ], room);
+    ], room, fold);
     const fromIndex = this.pressed === null ? -1 : spaces().findIndex(s => s.id === this.pressed);
     return v_flex()
       .relative()
       .id(`space-${w.id}`)
-      .px(8)
+      .px(SPACE_PADDING)
       .h(rowHeight({ tree }))
       .flex_none()
       .justify_center()
@@ -1339,33 +1612,38 @@ export default class Spaces extends View {
         h_flex()
           .w_full()
           .min_w(0)
-          .gap(9)
+          .gap(SPACE_GAP)
           .items_center()
-          .child(div().w(14).flex_none().flex().justify_center().when(Boolean(w.status), el => el.child(mark(w.status, t))))
-          .when(Boolean(tree), el => el.pl(22).child(svg("mods/workspace-chrome/branch.svg").size(13).text_color(t.dim)))
-          .when(!tree, el => el.child(svg("mods/workspace-chrome/folder.svg").size(16).flex_none().text_color(t.dim)))
+          .child(div().w(SPACE_STATUS_WIDTH).flex_none().flex().justify_center().when(Boolean(w.status), el => el.child(mark(w.status, t))))
+          .when(Boolean(tree), el => el.pl(WORKTREE_INDENT).child(svg("mods/workspace-chrome/branch.svg").size(BRANCH_WIDTH).flex_none().text_color(t.dim)))
+          .when(!tree, el => el.child(svg("mods/workspace-chrome/folder.svg").size(FOLDER_WIDTH).flex_none().text_color(t.dim)))
           .when(Boolean(lines), el => el.child(lines)),
       );
   }
 
   // A space's row and the ports under it share one selection box: selecting or
   // hovering a space highlights the ports with it, not only its first line.
-  spaceBox(row, t) {
+  spaceBox(row, t, terminalCount = 0) {
     const { w } = row;
     const on = w.active;
     const has = Boolean(this.ports[w.machine ?? ""]?.[w.id]?.length);
     return v_flex()
       .id(`space-box-${w.id}`)
+      .relative()
       .flex_none()
-      .ml(20)
+      .ml(SPACE_MARGIN)
       .mr(SCROLL_GUTTER)
       .my(1)
       .rounded(4)
       .when(on, (el) => el.bg(t.ansi5 + "33"))
       .when(!on, (el) => el.hover((s) => s.bg(t.hover)))
       .when(this.pressed === w.id && this.over !== w.id, (el) => el.opacity(0.5))
-      .child(this.row(row, t))
-      .when(has, (el) => el.child(this.portRow(w, t, row.tree)));
+      .child(this.row(row, t, terminalCount))
+      .when(has, el => el.child(this.portRow(w, t, row.tree)))
+      .when(has && terminalCount > 0 && !this.foldedTerminals.has(`space-${w.id}`), el => el.child(
+        div().id(`space-port-tree-${w.id}`).absolute().left(spaceTreeInset(row.tree)).bottom(-1)
+          .w(TREE_STROKE_WIDTH).h(PORT_ROW_HEIGHT + 1).bg(t.dim),
+      ));
   }
 
   // A space's listening ports under its row, `|` between them: each opens
@@ -1383,7 +1661,7 @@ export default class Spaces extends View {
       .id(`space-ports-${w.id}`)
       .flex_none()
       .w_full()
-      .h(18)
+      .h(PORT_ROW_HEIGHT)
       .px(8)
       .pl(tree ? 75 : 56)
       .gap(5)

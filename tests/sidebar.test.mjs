@@ -171,6 +171,176 @@ test("Spaces scroll follows displayed machine order and reacts to resize", () =>
   assert.deepEqual(instance.scroll.items, [3, 1, 1], "a hidden row has no scroll target");
 });
 
+test("Agents shows a plain terminal as the parent of a reporting child agent", () => {
+  const calls = [];
+  const attached = { address: "t1", pane: "p1", space: "home", tab: "tab", status: "idle", seq: 1 };
+  const { instance, context, herdr } = init("sidebar-agents", {
+    agents: () => [attached],
+    panes: () => [{ pane: "p1", terminal: "t1" }, { pane: "p2", terminal: "t2", cwd: "/work/current-project" }],
+    terminals: () => [
+      { address: "t3", parent: "t2", name: "pi-test", state: "live", status: "idle" },
+      { address: "t4", parent: "t1", name: "nested-pi", state: "live", status: "working" },
+      { address: "t5", parent: "t2", name: "plain-shell", state: "live", status: null },
+      { address: "t8", parent: "t5", name: "agent-through-shell", state: "live", status: "idle" },
+      { address: "t9", parent: "t1", name: "plain-command", state: "live", status: null },
+      { address: "t6", state: "finished", status: "idle" },
+      { address: "t2", state: "live", program: { name: "zsh" }, cwd: "/work/original-project" },
+      { address: "t7", name: "independent-pi", state: "live", status: "idle" },
+    ],
+    run: (command, args) => calls.push([command, args.terminal ?? args.pane, args.place]),
+  });
+  let root = instance.render(context);
+  assert.ok(textOf(byId(root, "ag-t2")).includes("current-project"));
+  assert.ok(textOf(byId(root, "sub-t3")).includes("pi-test"));
+  assert.ok(byId(root, "sub-t4"));
+  assert.ok(byId(root, "sub-t8"), "an agent launched through a plain shell stays visible");
+  assert.equal(byId(root, "sub-t5"), undefined);
+  assert.equal(byId(root, "sub-t9"), undefined);
+  const rows = [...nodes(root)].map(node => uiState(node).id).filter(id => /^(ag|sub)-t\d+$/.test(id ?? ""));
+  assert.equal(rows.indexOf("sub-t3"), rows.indexOf("ag-t2") + 1, "the child follows the plain parent's row");
+  for (const address of ["t3", "t4", "t5", "t6"]) assert.equal(byId(root, `ag-${address}`), undefined);
+  uiState(byId(root, "ag-t2")).handlers.on_click({}, context);
+  uiState(byId(root, "sub-t3")).handlers.on_click({}, context);
+  uiState(byId(root, "sub-t4")).handlers.on_click({}, context);
+  uiState(byId(root, "ag-t7")).handlers.on_click({}, context);
+  assert.equal(byId(root, "close-child-t3"), undefined);
+  uiState(byId(root, "sub-t3")).handlers.on_hover(true, context);
+  root = instance.render(context);
+  assert.ok(byId(root, "close-child-t3"));
+  assert.equal(byId(root, "close-child-t4"), undefined);
+  uiState(byId(root, "sub-t3")).handlers.on_hover(false, context);
+  root = instance.render(context);
+  assert.equal(byId(root, "close-child-t3"), undefined);
+  uiState(byId(root, "sub-t3")).handlers.on_hover(true, context);
+  root = instance.render(context);
+  let closeStopped = false;
+  uiState(byId(root, "close-child-t3")).handlers.on_click({}, { ...context, stop_propagation() { closeStopped = true; } });
+  assert.equal(closeStopped, true);
+  assert.deepEqual(calls, [["pane.focus", "p2", undefined], ["terminal.peek", "t3", undefined],
+    ["terminal.peek", "t4", undefined], ["terminal.keep", "t7", "tab"], ["terminal.kill", "t3", undefined]]);
+  uiState(byId(root, "fold-t2")).handlers.on_click({}, { ...context, stop_propagation() {} });
+  assert.equal(byId(instance.render(context), "sub-t3"), undefined);
+  herdr.layout = () => ({ id: "sidebar", size: { px: 76 } });
+  root = instance.render(context);
+  assert.ok(byId(root, "ag-t3"));
+});
+
+test("Spaces groups live pane-less terminals by their nearest ancestor space", () => {
+  const { instance, context, herdr } = spacePanel();
+  herdr.spaces = () => spaces.map(s => ({ ...s, tabs: [{ id: `${s.id}-tab` }] }));
+  herdr.panes = () => [
+    { terminal: "t1", tab: "local-tab" },
+    { terminal: "vps/t1", tab: "remote-tab" },
+  ];
+  let terms = [
+    { address: "t1", state: "live" },
+    { address: "vps/t1", parent: "t1", state: "live" },
+    { address: "t2", name: "tests", parent: "t1", state: "live" },
+    { address: "t3", name: "deep child", parent: "t2", state: "live" },
+    { address: "t4", parent: "t3", state: "finished" },
+    { address: "t5", parent: "t4", state: "live" },
+    { address: "t6", parent: "gone", state: "live" },
+    { address: "t7", parent: "t6", state: "live" },
+    { address: "vps/t2", parent: "vps/t1", state: "live" },
+    { address: "vps/t3", parent: "gone", state: "live" },
+  ];
+  herdr.terminals = () => terms;
+  instance.ports = { "": { local: [{ number: 3000, address: "127.0.0.1" }] } };
+  const calls = [];
+  herdr.run = (...args) => calls.push(args);
+  let root = instance.render(context);
+  const ids = section => [...nodes(byId(root, `terminal-section-${section}`))]
+    .map(n => uiState(n).id).filter(id => id?.startsWith("task-"));
+  assert.deepEqual(ids("space-local"), ["task-t2", "task-t3", "task-t5"]);
+  assert.ok(byId(root, "space-port-tree-local"));
+  assert.deepEqual(ids("space-remote"), ["task-vps/t2"]);
+  assert.deepEqual(ids("machine-local"), ["task-t6", "task-t7"]);
+  assert.deepEqual(ids("machine-vps"), ["task-vps/t3"]);
+  const unattached = byId(root, "terminals-machine-local");
+  assert.equal(textOf(unattached), "Unattached");
+  uiState(unattached).handlers.on_click({}, context);
+  root = instance.render(context);
+  assert.deepEqual(ids("machine-local"), []);
+  assert.equal(textOf(byId(root, "terminals-machine-local")), "Unattached 2");
+  uiState(byId(root, "terminals-machine-local")).handlers.on_click({}, context);
+  root = instance.render(context);
+  assert.equal(instance.activeAt, 4, "the unattached section counts toward the next machine's scroll offset");
+  uiState(byId(root, "task-t3")).handlers.on_click({}, context);
+  assert.equal(byId(root, "close-child-vps/t2"), undefined);
+  uiState(byId(root, "task-vps/t2")).handlers.on_hover(true, context);
+  root = instance.render(context);
+  assert.ok(byId(root, "close-child-vps/t2"));
+  assert.equal(byId(root, "close-child-t3"), undefined);
+  let closeStopped = false;
+  uiState(byId(root, "close-child-vps/t2")).handlers.on_click({}, { ...context, stop_propagation() { closeStopped = true; } });
+  assert.equal(closeStopped, true);
+  assert.deepEqual(calls.map(([command, args]) => [command, args.terminal]), [["terminal.peek", "t3"], ["terminal.kill", "vps/t2"]]);
+  const toggle = byId(byId(root, "space-local"), "terminals-space-local");
+  assert.equal(textOf(toggle), "");
+  uiState(toggle).handlers.on_click({}, { ...context, stop_propagation() {} });
+  root = instance.render(context);
+  assert.deepEqual(ids("space-local"), []);
+  assert.equal(byId(root, "space-port-tree-local"), undefined);
+  assert.equal(textOf(byId(root, "terminals-space-local")), "3");
+  assert.ok(!textOf(root).includes("Tasks"));
+  terms = [];
+  root = instance.render(context);
+  assert.equal(byId(root, "terminals-space-local"), undefined);
+  assert.equal(byId(root, "terminals-machine-local"), undefined);
+});
+
+test("machine Clear only removes finished records from the selected machine", async () => {
+  const { instance, context, herdr } = spacePanel();
+  const calls = [], toasts = [];
+  herdr.window = () => ({ push_toast: toast => toasts.push(toast) });
+  herdr.hc = async args => {
+    calls.push([...args]);
+    return { code: 0, stdout: JSON.stringify({
+      machines: [{ name: "vps", state: "connected" }],
+      terminals: [
+        { address: "t1", state: "finished", parent: "t0" },
+        { address: "vps/t1", state: "finished" },
+        { address: "vps/t2", state: "live" },
+      ],
+    }) };
+  };
+  instance.refreshMachines(context);
+  await context.tasks.at(-1).promise;
+  calls.length = 0;
+  instance.machines = [{ name: "vps", state: "connected" }];
+  const button = byId(instance.render(context), "machine-clear-vps");
+  assert.equal(textOf(button), "1");
+  const click = uiState(button).handlers.on_click;
+  let stopped = 0;
+  const cx = { ...context, stop_propagation() { stopped++; } };
+  click({}, cx);
+  click({}, cx);
+  await context.tasks.at(-1).promise;
+  assert.equal(stopped, 2);
+  assert.deepEqual(calls, [["ls", "--all", "--json"], ["rm", "vps/t1", "--json"]]);
+  assert.equal(toasts[0].title, "vps: removed 1 finished terminal");
+  assert.equal(textOf(byId(instance.render(context), "machine-clear-vps")), "0");
+});
+
+test("the trash count refreshes when a terminal leaves the live snapshot", async () => {
+  const { instance, context, herdr } = spacePanel();
+  let terms = [{ address: "t1", state: "live" }, { address: "t2", state: "live" }];
+  const calls = [];
+  herdr.terminals = () => terms;
+  herdr.hc = async args => {
+    calls.push([...args]);
+    return { code: 0, stdout: JSON.stringify({ terminals: terms }) };
+  };
+  instance.render(context);
+  terms = [{ address: "t1", state: "finished" }]; // t2 exited with --rm.
+  instance.render(context);
+  assert.equal(instance.finishedCountsDirty, true);
+  instance.checkNew(context);
+  await context.flush();
+  assert.deepEqual(calls, [["ls", "--all", "--json"]]);
+  assert.equal(textOf(byId(instance.render(context), "machine-clear-local")), "1");
+});
+
 test("machine guidance rows count toward scrolling; Copy preserves focus", () => {
   const { instance, context } = spacePanel();
   instance.machines = [{ name: "vps", state: "needs_login", keeps_running_after_logout: false }];
