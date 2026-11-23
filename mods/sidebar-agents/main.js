@@ -686,10 +686,22 @@ export default class Agents extends View {
       .child(h_flex().ml(4).flex_1().min_w(0).items_center()
         .when(Boolean(pic), el => el.child(div().mr(8).flex_none().child(pic)))
         .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(k.name || k.template || k.program?.name || k.address)))
+      .when(!this.listed.has(k.address), row => row.child(div().ml(4).size(18).flex_none()
+        .when(this.hoveredChild === k.address, el => el.child(div().id(`keep-child-${k.address}`)
+          .size_full().flex().items_center().justify_center().rounded(4)
+          .text_color(t.dim).cursor_default().tooltip("Keep as tab")
+          .hover(s => s.bg(t.hover).text_color(t.foreground))
+          .on_click((_e, cx) => {
+            cx.stop_propagation();
+            this.hoveredChild = null;
+            run("terminal.keep", { terminal: k.address, place: "tab" });
+            cx.notify();
+          })
+          .child(svg("mods/sidebar-agents/keep.svg").size(12))))))
       .child(div().ml(4).size(18).flex_none()
         .when(this.hoveredChild === k.address, el => el.child(div().id(`close-child-${k.address}`)
           .size_full().flex().items_center().justify_center().rounded(4)
-          .text_color(t.dim).cursor_pointer().tooltip("Close terminal")
+          .text_color(t.dim).tooltip("Close terminal")
           .hover(s => s.bg(t.hover).text_color(t.foreground))
           .on_click((_e, cx) => {
             cx.stop_propagation();

@@ -1505,7 +1505,7 @@ export default class Spaces extends View {
         : svg(iconPath || "mods/workspace-chrome/terminal.svg").size(14).flex_none().text_color(t.foreground);
       const status = term.status === "error" ? "blocked" : term.status;
       return h_flex().id(`task-${term.address}`).h(26).my(1).pl(leading ? SPACE_PADDING : SPACE_TREE_INSET).pr(SPACE_PADDING)
-        .items_center().rounded(4).text_size(12).text_color(t.muted).cursor_pointer()
+        .items_center().rounded(4).text_size(12).text_color(t.muted)
         .when(shown === term.address, el => el.bg(t.ansi5 + "33").text_color(t.foreground))
         .hover(s => s.bg(t.hover).text_color(t.foreground))
         .on_hover((on, cx) => {
@@ -1526,9 +1526,21 @@ export default class Spaces extends View {
           .child(icon)
           .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(title)))
         .child(div().ml(4).size(18).flex_none()
+          .when(this.hoveredChild === term.address, el => el.child(div().id(`keep-child-${term.address}`)
+            .size_full().flex().items_center().justify_center().rounded(4)
+            .text_color(t.dim).cursor_default().tooltip("Keep as tab")
+            .hover(s => s.bg(t.hover).text_color(t.foreground))
+            .on_click((_e, cx) => {
+              cx.stop_propagation();
+              this.hoveredChild = null;
+              run("terminal.keep", { terminal: term.address, place: "tab" });
+              cx.notify();
+            })
+            .child(svg("mods/sidebar-spaces/keep.svg").size(12)))))
+        .child(div().ml(4).size(18).flex_none()
           .when(this.hoveredChild === term.address, el => el.child(div().id(`close-child-${term.address}`)
             .size_full().flex().items_center().justify_center().rounded(4)
-            .text_color(t.dim).cursor_pointer().tooltip("Close terminal")
+            .text_color(t.dim).tooltip("Close terminal")
             .hover(s => s.bg(t.hover).text_color(t.foreground))
             .on_click((_e, cx) => {
               cx.stop_propagation();
