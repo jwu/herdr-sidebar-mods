@@ -352,14 +352,14 @@ test("Agents shows a plain terminal as the parent of a reporting child agent", (
   uiState(byId(root, "sub-t4")).handlers.on_click({}, context);
   uiState(byId(root, "ag-t7")).handlers.on_click({}, context);
   assert.equal(byId(root, "close-child-t3"), undefined);
-  uiState(byId(root, "sub-t3")).handlers.on_hover(true, context);
+  uiState(byId(root, "sub-t3")).handlers.on_mouse_move({}, context);
   root = instance.render(context);
   assert.ok(byId(root, "close-child-t3"));
   assert.equal(byId(root, "close-child-t4"), undefined);
   uiState(byId(root, "sub-t3")).handlers.on_hover(false, context);
   root = instance.render(context);
   assert.equal(byId(root, "close-child-t3"), undefined);
-  uiState(byId(root, "sub-t3")).handlers.on_hover(true, context);
+  uiState(byId(root, "sub-t3")).handlers.on_mouse_move({}, context);
   root = instance.render(context);
   let closeStopped = false;
   uiState(byId(root, "close-child-t3")).handlers.on_click({}, { ...context, stop_propagation() { closeStopped = true; } });
@@ -396,6 +396,11 @@ test("viewing a completed child clears that turn in both sidebars", () => {
     const render = () => panel.instance.render(panel.context);
     uiState(byId(render(), rowId)).handlers.on_hover(true, panel.context);
     let root = render();
+    assert.equal(byId(root, "keep-child-t2"), undefined, "a hover notification alone does not reveal Keep");
+    assert.equal(byId(root, "close-child-t2"), undefined, "a hover notification alone does not reveal Close");
+    uiState(byId(root, rowId)).handlers.on_mouse_move({}, panel.context);
+    root = render();
+    assert.ok(byId(root, "keep-child-t2"));
     assert.ok(byId(root, "close-child-t2"));
     uiState(byId(root, rowId)).handlers.on_click({}, panel.context);
     root = render();
@@ -453,7 +458,7 @@ test("Spaces groups live pane-less terminals by their nearest ancestor space", (
   assert.equal(instance.activeAt, 4, "the unattached section counts toward the next machine's scroll offset");
   uiState(byId(root, "task-t3")).handlers.on_click({}, context);
   assert.equal(byId(root, "close-child-vps/t2"), undefined);
-  uiState(byId(root, "task-vps/t2")).handlers.on_hover(true, context);
+  uiState(byId(root, "task-vps/t2")).handlers.on_mouse_move({}, context);
   root = instance.render(context);
   assert.ok(byId(root, "close-child-vps/t2"));
   assert.equal(byId(root, "close-child-t3"), undefined);

@@ -1376,7 +1376,7 @@ export default class Spaces extends View {
         .child(svg(`mods/${busy ? "workspace-chrome/spinner" : "sidebar-spaces/trash"}.svg`).size(13).flex_none()
           .when(busy, el => el.spin(900)))
         .child(String(count));
-      const row1 = h_flex().gap(7).items_center()
+      const row1 = h_flex().pr(SPACE_PADDING).gap(7).items_center()
         .child(icon())
         .child(div().flex_1().min_w_0().flex().items_center().gap(6)
           .child(div().min_w_0().truncate().child(m ?? "Local"))
@@ -1392,11 +1392,14 @@ export default class Spaces extends View {
             .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
             .on_click((_e, cx) => { cx.stop_propagation(); this.reconnect(machine, cx); })
             .child(repair?.busy ? "Connecting…" : "Connect"))))
-        .when(connected, el => el.child(div().id(`machine-add-${m ?? "local"}`).flex_none().px(4).rounded(4).hover(s => s.bg(t.hover).text_color(t.foreground))
+        .when(connected, el => el.child(div().id(`machine-add-${m ?? "local"}`).w(16).h(18).flex_none().flex().items_center().justify_center()
+          .rounded(4).hover(s => s.bg(t.hover).text_color(t.foreground)).tooltip("New space there")
           .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-          .on_click((_e, cx) => { cx.stop_propagation(); run("space.new", { machine: m ?? "" }); }).child("+")))
+          .on_click((_e, cx) => { cx.stop_propagation(); run("space.new", { machine: m ?? "" }); })
+          .child(svg("mods/workspace-chrome/plus.svg").size(12).flex_none())))
         .child(div().size(6).rounded(3).flex_none().bg(connected ? t.ansi2 : t.muted))
-        .child(svg(`mods/workspace-chrome/chevron-${folded ? "right" : "down"}.svg`).size(11).flex_none());
+        .child(div().w(SPACE_STATUS_WIDTH).flex_none().flex().justify_center()
+          .child(svg(`mods/workspace-chrome/chevron-${folded ? "right" : "down"}.svg`).size(11).flex_none()));
       // A press that travels to another header reorders the machines; a press
       // that stays on its own folds it. The carried header fades, and the
       // header under the pointer shows the gap it would land in.
@@ -1507,11 +1510,15 @@ export default class Spaces extends View {
       return h_flex().id(`task-${term.address}`).h(26).my(1).pl(leading ? SPACE_PADDING : SPACE_TREE_INSET).pr(SPACE_PADDING)
         .items_center().rounded(4).text_size(12).text_color(t.muted)
         .when(shown === term.address, el => el.bg(t.ansi5 + "33").text_color(t.foreground))
-        .hover(s => s.bg(t.hover).text_color(t.foreground))
+        .when(this.hoveredChild === term.address, el => el.bg(t.hover).text_color(t.foreground))
+        .on_mouse_move((_e, cx) => {
+          if (this.hoveredChild === term.address) return;
+          this.hoveredChild = term.address;
+          cx.notify();
+        })
         .on_hover((on, cx) => {
-          const hovered = on ? term.address : this.hoveredChild === term.address ? null : this.hoveredChild;
-          if (hovered === this.hoveredChild) return;
-          this.hoveredChild = hovered;
+          if (on || this.hoveredChild !== term.address) return;
+          this.hoveredChild = null;
           cx.notify();
         })
         .on_click((_e, cx) => {

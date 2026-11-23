@@ -668,11 +668,15 @@ export default class Agents extends View {
       .items_center()
       .text_size(12.5)
       .when(on, (el) => el.bg(t.ansi5 + "26"))
-      .hover((s) => s.bg(t.hover))
+      .when(this.hoveredChild === k.address, el => el.bg(t.hover))
+      .on_mouse_move((_e, cx) => {
+        if (this.hoveredChild === k.address) return;
+        this.hoveredChild = k.address;
+        cx.notify();
+      })
       .on_hover((on, cx) => {
-        const hovered = on ? k.address : this.hoveredChild === k.address ? null : this.hoveredChild;
-        if (hovered === this.hoveredChild) return;
-        this.hoveredChild = hovered;
+        if (on || this.hoveredChild !== k.address) return;
+        this.hoveredChild = null;
         cx.notify();
       })
       .on_click((_e, cx) => {
