@@ -1,15 +1,16 @@
 # Releasing Herdr Ultimate Sidebar
 
-Both panels share one version. Use a patch release for fixes, a minor release
+The mods share one version. Use a patch release for fixes, a minor release
 for new features, and a major release for breaking changes after 1.0.
 
 1. Start with a clean working tree and sync `main` to the commit you want to release.
-2. Check both panels with Herdr installed.
+2. Check the mods with Herdr installed.
 
    ```sh
    node --test tests/*.test.mjs
    herdr-app check mods/sidebar-spaces
    herdr-app check mods/sidebar-agents
+   herdr-app check mods/pane-send-back
    ```
 
 3. Create and push a version tag. Replace `v0.1.0` with the version you intend to publish.

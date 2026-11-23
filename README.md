@@ -16,6 +16,27 @@ herdr-app do layout.clone '{"name":"main","as":"sidebar"}'
 
 In `~/.config/herdr-app/layouts/sidebar.json`, change the `spaces` block’s `mod` to `sidebar-spaces` and the `agents` block’s `mod` to `sidebar-agents`. Keep the sidebar block’s `"id": "sidebar"`, then press `Ctrl+Shift+L` to switch to the layout.
 
+### Optional pane header
+
+Use `pane-send-back` to show the program icon, program name, short `hc` terminal ID, and working path in each terminal pane header. Click the ID to copy the full address, including the machine name for a remote terminal. For example, ask an agent to run `hc read t7 --lines 100` to see the pane’s recent output. A child terminal with a live parent also has a **Send back** button that parks the child.
+
+```sh
+cp -R mods/pane-send-back ~/.config/herdr-app/mods/
+```
+
+In your personal layout, set `content.pane.header.content.mod` to `pane-send-back` on the block whose `content.tab` is `"active"`. If that block has no pane header, add this to its `content` object alongside `"tab": "active"`.
+
+```json
+"pane": {
+  "header": {
+    "content": { "mod": "pane-send-back" },
+    "reveal": "always",
+    "height": 30,
+    "position": "top"
+  }
+}
+```
+
 ## Features
 
 - **Spaces**
@@ -40,4 +61,4 @@ In `~/.config/herdr-app/layouts/sidebar.json`, change the `spaces` block’s `mo
 
 ## License
 
-[Apache-2.0](LICENSE). Based on Herdr’s bundled Spaces and Agents mods.
+[Apache-2.0](LICENSE). Based on Herdr’s bundled Spaces, Agents, and pane header mods.
