@@ -33,6 +33,7 @@ const AGENT_PADDING = 8;
 const AGENT_GAP = 8;
 const AGENT_STATUS_WIDTH = 16;
 const AGENT_ICON_WIDTH = 20;
+const statusAtStart = () => shared("sidebar.statusPosition") === "start";
 const TREE_STROKE_WIDTH = 1.5;
 const TREE_COLUMN_WIDTH = 13;
 function segmentBudgets(lengths, available) {
@@ -383,6 +384,7 @@ export default class Agents extends View {
   init(_props, cx) {
     if (props()?.sortMenu) return;
     this.folded = new Set();
+    this.openChildren = new Map();
     this.hoveredChild = null;
     this.scroll = ScrollHandle.new();
     this.activeAt = -1;
@@ -651,11 +653,13 @@ export default class Agents extends View {
     const st = kidStatus(k, this.listed);
     const pic = icon(k.program, 14, t.foreground);
     const on = k.address === shown;
-    const treeInset = AGENT_GAP + (AGENT_ICON_WIDTH - TREE_STROKE_WIDTH) / 2;
-    const labelGap = AGENT_ICON_WIDTH + AGENT_GAP * 2 - treeInset - TREE_COLUMN_WIDTH;
+    const leading = statusAtStart();
+    const treeInset = (AGENT_ICON_WIDTH - TREE_STROKE_WIDTH) / 2;
+    const status = this.statusCell(t, { status: st });
     return h_flex()
       .id(`sub-${k.address}`)
-      .px(AGENT_PADDING)
+      .pl(leading ? AGENT_PADDING : AGENT_PADDING + treeInset)
+      .pr(AGENT_PADDING)
       .rounded(4)
       .my(1)
       .h(26)
@@ -677,10 +681,9 @@ export default class Agents extends View {
         if (this.listed.has(k.address)) run("pane.focus", { terminal: k.address });
         else this.peek(k.address);
       })
-      .child(div().w(AGENT_STATUS_WIDTH).mr(treeInset).flex_none().flex().justify_center()
-        .child(this.status(t, { status: st }, true)))
+      .when(leading, el => el.child(status.mr(treeInset + AGENT_GAP)))
       .children(treeLines(s.lines, t))
-      .child(h_flex().ml(labelGap).flex_1().min_w(0).items_center()
+      .child(h_flex().ml(4).flex_1().min_w(0).items_center()
         .when(Boolean(pic), el => el.child(div().mr(8).flex_none().child(pic)))
         .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(k.name || k.template || k.program?.name || k.address)))
       .child(div().ml(4).size(18).flex_none()
@@ -694,7 +697,12 @@ export default class Agents extends View {
             run("terminal.kill", { terminal: k.address });
             cx.notify();
           })
-          .child(svg("mods/workspace-chrome/x.svg").size(12)))));
+          .child(svg("mods/workspace-chrome/x.svg").size(12)))))
+      .when(!leading, el => el.child(status.ml(AGENT_GAP)));
+  }
+
+  statusCell(t, a) {
+    return div().w(AGENT_STATUS_WIDTH).flex_none().flex().justify_center().child(this.status(t, a, true));
   }
 
   // compact: a ! for blocked where a header already says "Needs you".
@@ -713,6 +721,11 @@ export default class Agents extends View {
     if (props()?.sortMenu) return this.sortMenu(t);
     this.adoptGit();
     const collapsed = narrow();
+    const leading = statusAtStart();
+    const expandChildren = shared("sidebar.agents.expandChildren") !== false;
+    const showBranch = shared("sidebar.git.showBranch") !== false;
+    const showChanges = shared("sidebar.git.showChanges") !== false;
+    const showSync = shared("sidebar.git.showSync") !== false;
     const px = sidebarPx();
     const sort = sortOf();
     let list = [...agents()];
@@ -808,11 +821,17 @@ export default class Agents extends View {
       offset++;
       return el;
     };
+    const childrenOpen = address => this.openChildren.get(address) ?? expandChildren;
+    const toggleChildren = (address, cx) => {
+      cx.stop_propagation();
+      this.openChildren.set(address, !childrenOpen(address));
+      cx.notify();
+    };
     const withKids = (a, i) => {
       const subs = collapsed ? [] : this.tree(all, a.address);
-      if (navigated && subs.some(s => s.t.address === active)) this.folded.delete(a.address);
+      if (navigated && !childrenOpen(a.address) && subs.some(s => s.t.address === active)) this.openChildren.set(a.address, true);
       const r = indexed(row(a, i, subs), a.address);
-      if (this.folded.has(a.address)) return [r];
+      if (!childrenOpen(a.address)) return [r];
       return [r, ...subs.map(s => indexed(this.subRow(t, s, shown), s.t.address))];
     };
 
@@ -820,7 +839,7 @@ export default class Agents extends View {
     const fold = (a, subs) => {
       const sts = subs.map((s) => kidStatus(s.t, this.listed));
       const top = sts.reduce((m, s) => ((RANK[s] ?? 0) > (RANK[m] ?? 0) ? s : m), null);
-      const open = !this.folded.has(a.address);
+      const open = childrenOpen(a.address);
       return div()
         .id(`fold-${a.address}`)
         .h(18)
@@ -834,11 +853,7 @@ export default class Agents extends View {
         .text_color(open ? t.muted : (t[top] ?? t.muted))
         .cursor_pointer()
         .hover((s) => s.bg(t.hover).text_color(t.foreground))
-        .on_click((_e, cx) => {
-          cx.stop_propagation();
-          open ? this.folded.add(a.address) : this.folded.delete(a.address);
-          cx.notify();
-        })
+        .on_click((_e, cx) => toggleChildren(a.address, cx))
         .child(svg(`mods/workspace-chrome/chevron-${open ? "down" : "right"}.svg`).size(11).flex_none())
         .when(!open, el => el.child(String(subs.length)));
     };
@@ -864,6 +879,7 @@ export default class Agents extends View {
       // An agent on another machine (`vps/t7`) says which.
       const machine = a.address.includes("/") ? a.address.split("/")[0] : null;
       if (collapsed) {
+        const status = h_flex().w(14).flex_none().items_center().justify_center().child(this.status(t, a, true));
         return h_flex()
           .id(`ag-${a.address}`)
           .h(26)
@@ -874,8 +890,9 @@ export default class Agents extends View {
           .hover((s) => s.bg(t.hover))
           .on_click(open)
           .tooltip(label(a))
+          .when(leading, el => el.child(status))
           .child(div().flex_1().min_w(0).whitespace_nowrap().text_right().text_color(t.muted).child(String(i + 1)))
-          .child(h_flex().w(14).flex_none().items_center().justify_center().child(this.status(t, a, true)));
+          .when(!leading, el => el.child(status));
       }
       const when = this.since(a);
       const idle = a.status === "idle" && !a.focused;
@@ -897,22 +914,20 @@ export default class Agents extends View {
           cx.notify();
         })
         .child(svg(`mods/workspace-chrome/${isPinned ? "pin-off" : "pin"}.svg`).size(13));
-      // The state and the program sit between the two lines, both centred on the
-      // whole row; the first line is the folder it works in, the second the
-      // machine it runs on.
+      // The program and state flank the working folder and machine details.
       const cwd = cwdOf.get(a.pane) ?? a.cwd ?? null;
       const folder = a.pane || a.terminalParent ? base(cwd) || cwd || a.space_name || label(a) : label(a);
       const g = cwd ? this.git[gitKey(machine, cwd)] : null;
       const remote = g?.upstream?.includes("/") ? `\u25b8 ${g.upstream.slice(0, g.upstream.indexOf("/"))}` : "";
-      const tail = [g?.branch, remote].filter(Boolean).join(" ");
+      const tail = showBranch ? [g?.branch, remote].filter(Boolean).join(" ") : "";
       // The row's own columns, off the sidebar width: this is what is left.
       const line = this.nameLine([
         { text: machine ?? "Local", color: t.dim },
         ...(tail ? [{ text: tail, color: t.dim }] : []),
-        ...(g?.dirty > 0 ? [{ text: `*${g.dirty}`, color: t.ansi3, fixed: true }] : []),
-        ...(g?.conflicts > 0 ? [{ text: `\u2718${g.conflicts}`, color: t.ansi1, fixed: true }] : []),
-        ...(g?.ahead > 0 ? [{ text: `\u2191${g.ahead}`, color: t.ansi2, fixed: true }] : []),
-        ...(g?.behind > 0 ? [{ text: `\u2193${g.behind}`, color: t.ansi1, fixed: true }] : []),
+        ...(showChanges && g?.dirty > 0 ? [{ text: `*${g.dirty}`, color: t.ansi3, fixed: true }] : []),
+        ...(showChanges && g?.conflicts > 0 ? [{ text: `\u2718${g.conflicts}`, color: t.ansi1, fixed: true }] : []),
+        ...(showSync && g?.ahead > 0 ? [{ text: `\u2191${g.ahead}`, color: t.ansi2, fixed: true }] : []),
+        ...(showSync && g?.behind > 0 ? [{ text: `\u2193${g.behind}`, color: t.ansi1, fixed: true }] : []),
       ], Math.max(0, px - 88));
       return h_flex()
         .id(`ag-${a.address}`)
@@ -933,13 +948,9 @@ export default class Agents extends View {
         })
         .on_click(open)
         .when(a.terminalParent, el => el.tooltip([cwd, a.title].filter(Boolean).join(" · ")))
-        .child(div().w(AGENT_STATUS_WIDTH).flex_none().flex().justify_center().child(this.status(t, a, true)))
+        .when(leading, el => el.child(this.statusCell(t, a)))
         .when(Boolean(pic), (el) => el.child(div().id(`agent-fold-${a.address}`).flex_none()
-          .when(subs.length > 0, (el) => el.on_click((_e, cx) => {
-            cx.stop_propagation();
-            this.folded.has(a.address) ? this.folded.delete(a.address) : this.folded.add(a.address);
-            cx.notify();
-          })).child(pic)))
+          .when(subs.length > 0, (el) => el.on_click((_e, cx) => toggleChildren(a.address, cx))).child(pic)))
         .when(!pic, (el) => el.child(div().w(AGENT_ICON_WIDTH).flex_none()))
         .child(v_flex().flex_1().min_w(0).gap(1)
           .child(h_flex().h(18).flex_none().gap(6).items_center()
@@ -950,7 +961,8 @@ export default class Agents extends View {
             .when(this.hovered !== a.address && Boolean(when), (el) => el.child(div().flex_none().text_size(11).text_color(t.dim).child(duration(now - when)))))
           .child(h_flex().h(16).w_full().min_w(0).gap(4).items_center()
             .child(svg(`mods/workspace-chrome/${machine ? "server" : "monitor"}.svg`).size(12).flex_none().text_color(t.dim))
-            .when(Boolean(line), (el) => el.child(line))));
+            .when(Boolean(line), (el) => el.child(line))))
+        .when(!leading, el => el.child(this.statusCell(t, a)));
     };
 
     // Groups in list order: spaces (grouped) or priority sections. Agents of a

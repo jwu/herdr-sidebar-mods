@@ -80,13 +80,13 @@ test("Agents reveals a focused kept sub-agent through both folds", () => {
   const child = { address: "t3", parent: "t1", state: "live", status: "idle", cwd: "/child" };
   p.data.terminals = [child];
   p.data.agents.push({ address: "t3", pane: "p3", tab: "tab1", space: "s1", status: "idle", seq: 0 });
-  p.render();
+  const before = p.render();
+  uiState(byId(before, "fold-t1")).handlers.on_click({}, { ...p.context, stop_propagation() {} });
+  assert.equal(byId(p.render(), "sub-t3"), undefined);
   p.instance.folded.add("sec-2");
-  p.instance.folded.add("t1");
   p.data.focus = { terminal: "t3" };
   const root = p.render();
   assert.equal(p.instance.folded.has("sec-2"), false);
-  assert.equal(p.instance.folded.has("t1"), false);
   assert.ok(byId(root, "sub-t3"));
   assert.equal(p.instance.activeAt, 2); // group header, parent, child
   assert.equal(p.instance.scroll.items.at(-1), 2);

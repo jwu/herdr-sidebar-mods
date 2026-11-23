@@ -70,6 +70,152 @@ test("checks render live data without writing state or reordering worktrees", ()
   }
 });
 
+test("Spaces and Agents align expanded rows and keep status at the end", () => {
+  const space = { id: "local", name: "Project", status: "done", tabs: [] };
+  const loadedSpaces = init("sidebar-spaces", { spaces: () => [space] });
+  const loadedAgents = init("sidebar-agents", {
+    agents: () => [{ address: "t1", status: "done", seq: 1, title: "Agent" }],
+  });
+  const t = loadedSpaces.herdr.theme();
+  const value = (node, method) => uiState(node).calls.find(([name]) => name === method)?.[1];
+  const assertTrailingStatus = row => {
+    const status = uiState(row).children.at(-1);
+    assert.ok([...nodes(status)].some(n => value(n, "bg") === t.done));
+  };
+  const agents = loadedAgents.instance.render(loadedAgents.context);
+  const agentRow = byId(agents, "ag-t1");
+  assertTrailingStatus(agentRow);
+  for (const tree of [false, true]) {
+    const spaceBox = loadedSpaces.instance.spaceBox({ w: space, i: 0, tree }, t);
+    const outer = byId(spaceBox, "space-local");
+    const row = uiState(outer).children.at(-1);
+    assert.equal(value(spaceBox, "ml") + value(outer, "px"), value(byId(agents, "ag-list"), "pl") + value(agentRow, "px"));
+    assert.equal(value(uiState(row).children[0], "w"), value(uiState(agentRow).children[0], "w"));
+    assert.equal(value(row, "gap"), value(agentRow, "gap"));
+    assert.equal(value(row, "pl"), undefined);
+    assertTrailingStatus(row);
+  }
+  const terminal = { address: "t2", status: "done" };
+  const [taskRow] = loadedSpaces.instance.terminalRows("space-local", [terminal], t);
+  const subRow = loadedAgents.instance.subRow(t, { t: terminal, lines: ["└"] });
+  assert.equal(value(taskRow, "pl"), value(subRow, "pl"));
+  assertTrailingStatus(taskRow);
+  assertTrailingStatus(subRow);
+});
+
+test("Sidebar settings applies the selected status position to both panels", () => {
+  const values = new Map();
+  const shared = key => values.get(key);
+  const closed = [];
+  let overlay;
+  const space = { id: "local", name: "Project", status: "done", tabs: [] };
+  const spaces = init("sidebar-spaces", { shared, spaces: () => [space], openOverlay: spec => { overlay = spec; } });
+  const agents = init("sidebar-agents", {
+    shared,
+    agents: () => [{ address: "t1", status: "done", seq: 1, title: "Agent" }],
+  });
+  const root = spaces.instance.render(spaces.context);
+  uiState(byId(root, "sidebar-settings")).handlers.on_click();
+  assert.equal(overlay.mod, "sidebar-spaces");
+  assert.equal(overlay.kind, "dialog");
+  const settings = init(overlay.mod, {
+    checking: () => false,
+    props: () => ({ ...overlay.props, overlay: "settings-overlay" }),
+    shared,
+    setShared: (key, value) => values.set(key, value),
+    closeOverlay: id => closed.push(id),
+  });
+  assert.equal(settings.context.tasks.length, 0);
+  assert.equal(settings.context.timers.length, 0);
+  const initial = [...nodes(settings.instance.render(settings.context))]
+    .filter(node => uiState(node).id?.startsWith("setting-sidebar.statusPosition-"));
+  assert.deepEqual(initial.map(textOf), ["Left", "Right"]);
+  assert.ok(uiState(initial[1]).calls.some(([method]) => method === "font_semibold"));
+
+  const t = spaces.herdr.theme();
+  const terminal = { address: "t2", status: "done" };
+  for (const [choice, index] of [["start", 0], ["end", -1]]) {
+    const menu = settings.instance.render(settings.context);
+    const id = `setting-sidebar.statusPosition-${choice}`;
+    uiState(byId(menu, id)).handlers.on_click();
+    const selected = byId(settings.instance.render(settings.context), id);
+    assert.ok(uiState(selected).calls.some(([method]) => method === "font_semibold"));
+    const spaceRow = byId(spaces.instance.render(spaces.context), "space-local");
+    const agentRow = byId(agents.instance.render(agents.context), "ag-t1");
+    const [taskRow] = spaces.instance.terminalRows("space-local", [terminal], t);
+    const subRow = agents.instance.subRow(t, { t: terminal, lines: ["└"] });
+    for (const row of [uiState(spaceRow).children.at(-1), agentRow, taskRow, subRow]) {
+      const cell = uiState(row).children.at(index);
+      assert.ok([...nodes(cell)].some(n => uiState(n).calls.some(([method, color]) => method === "bg" && color === t.done)));
+    }
+  }
+  assert.deepEqual(closed, [], "changes can be made without reopening the dialog");
+  const dialog = settings.instance.render(settings.context);
+  for (const key of ["git.showBranch", "git.showChanges", "git.showSync", "spaces.showUsage", "spaces.showPorts", "spaces.expandTerminals", "spaces.showCup", "agents.expandChildren"]) {
+    const toggle = uiState(byId(dialog, `setting-sidebar.${key}`)).handlers.on_click;
+    toggle();
+    assert.equal(shared(`sidebar.${key}`), false);
+    toggle();
+    assert.equal(shared(`sidebar.${key}`), true);
+  }
+  uiState(byId(dialog, "setting-agents.sort-grouped")).handlers.on_click();
+  assert.equal(shared("agents.sort"), "grouped");
+  uiState(byId(dialog, "settings-done")).handlers.on_click();
+  assert.deepEqual(closed, ["settings-overlay"]);
+});
+
+test("Sidebar display preferences affect both lists and preserve individual fold choices", () => {
+  const values = new Map();
+  const shared = key => values.get(key);
+  const space = { id: "local", name: "Project", folder: "/project", tabs: [{ id: "tab" }] };
+  const model = {
+    shared,
+    spaces: () => [space],
+    panes: () => [{ pane: "p1", terminal: "t1", tab: "tab", cwd: space.folder }],
+    terminals: () => [{ address: "t2", parent: "t1", state: "live", status: "idle" }],
+    agents: () => [{ address: "t1", pane: "p1", tab: "tab", space: "local", status: "working", seq: 1 }],
+    layout: () => ({ id: "sidebar", size: { px: 400 } }),
+  };
+  const spaces = init("sidebar-spaces", model);
+  const agents = init("sidebar-agents", model);
+  const git = { branch: "feature", upstream: "origin/feature", dirty: 2, conflicts: 4, ahead: 3, behind: 1 };
+  for (const panel of [spaces, agents]) panel.instance.git[JSON.stringify([null, space.folder])] = git;
+  spaces.instance.cupHere = true;
+  spaces.instance.ports = { "": { local: [{ number: 3000, address: "127.0.0.1" }] } };
+  const render = panel => panel.instance.render(panel.context);
+  for (const [key, labels] of [["Branch", ["feature", "origin"]], ["Changes", ["*2", "✘4"]], ["Sync", ["↑3", "↓1"]]]) {
+    for (const panel of [spaces, agents]) for (const label of labels) assert.ok(textOf(render(panel)).includes(label), label);
+    values.set(`sidebar.git.show${key}`, false);
+    for (const panel of [spaces, agents]) for (const label of labels) assert.ok(!textOf(render(panel)).includes(label), label);
+  }
+  assert.ok(textOf(render(spaces)).includes("CPU"));
+  assert.ok(byId(render(spaces), "space-ports-local"));
+  assert.ok(byId(render(spaces), "machine-cup-local"));
+  assert.ok(byId(render(spaces), "task-t2"));
+  assert.ok(byId(render(agents), "sub-t2"));
+  values.set("sidebar.spaces.showUsage", false);
+  values.set("sidebar.spaces.showPorts", false);
+  values.set("sidebar.spaces.showCup", false);
+  values.set("sidebar.spaces.expandTerminals", false);
+  values.set("sidebar.agents.expandChildren", false);
+  values.set("agents.sort", "grouped");
+  let spaceRoot = render(spaces);
+  let agentRoot = render(agents);
+  assert.ok(!textOf(spaceRoot).includes("CPU"));
+  assert.equal(byId(spaceRoot, "space-ports-local"), undefined);
+  assert.equal(byId(spaceRoot, "space-port-tree-local"), undefined);
+  assert.equal(byId(spaceRoot, "machine-cup-local"), undefined);
+  assert.equal(byId(spaceRoot, "task-t2"), undefined);
+  assert.equal(byId(agentRoot, "sub-t2"), undefined);
+  assert.ok(byId(agentRoot, "sp-local"));
+  uiState(byId(spaceRoot, "terminals-space-local")).handlers.on_click({}, { ...spaces.context, stop_propagation() {} });
+  uiState(byId(agentRoot, "fold-t1")).handlers.on_click({}, { ...agents.context, stop_propagation() {} });
+  assert.ok(byId(render(spaces), "task-t2"));
+  assert.ok(byId(render(agents), "sub-t2"));
+  spaces.instance.cup = "on";
+  assert.ok(byId(render(spaces), "machine-cup-local"), "an active hold can still be stopped");
+});
+
 test("Spaces restores valid machine order and drops damaged reconnect records", () => {
   const { instance, context } = init("sidebar-spaces", {}, {
     "machines.order": '["vps",null,"vps",42,{}]',

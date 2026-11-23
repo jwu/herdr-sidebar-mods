@@ -7,7 +7,7 @@
 import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
 import * as fs from "fs/promises";
-import { spaces, machines, panes, terminals, focused, run, openOverlay, exec, hc, appHome, theme, shared, setShared, watchFolder, window, layout, nextCommand, checking } from "herdr";
+import { spaces, machines, panes, terminals, focused, run, openOverlay, closeOverlay, props, exec, hc, appHome, theme, shared, setShared, watchFolder, window, layout, nextCommand, checking } from "herdr";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -28,20 +28,34 @@ function place(s, ps) {
   return ps.find((p) => tabs.has(p.tab) && p.cwd)?.cwd || s.folder;
 }
 const rowHeight = ({ tree }) => (tree ? 28 : 30);
-const SPACE_MARGIN = 20;
+const SPACE_MARGIN = 8;
 const SPACE_PADDING = 8;
-const SPACE_GAP = 9;
-const SPACE_STATUS_WIDTH = 14;
-const WORKTREE_INDENT = 22;
+const SPACE_GAP = 8;
+const SPACE_STATUS_WIDTH = 16;
+const SPACE_ICON_WIDTH = 20;
 const FOLDER_WIDTH = 16;
 const BRANCH_WIDTH = 13;
 const TREE_STROKE_WIDTH = 1.5;
 const TREE_COLUMN_WIDTH = 13;
 const PORT_ROW_HEIGHT = 18;
 
-const spaceTreeInset = worktree => SPACE_PADDING + SPACE_STATUS_WIDTH + SPACE_GAP
-  + (worktree ? WORKTREE_INDENT : 0)
-  + ((worktree ? BRANCH_WIDTH : FOLDER_WIDTH) - TREE_STROKE_WIDTH) / 2;
+const SPACE_TREE_INSET = SPACE_PADDING + (SPACE_ICON_WIDTH - TREE_STROKE_WIDTH) / 2;
+const STATUS_POSITION_KEY = "sidebar.statusPosition";
+const SHOW_USAGE = "sidebar.spaces.showUsage";
+const SHOW_PORTS = "sidebar.spaces.showPorts";
+const SHOW_CUP = "sidebar.spaces.showCup";
+const EXPAND_TERMINALS = "sidebar.spaces.expandTerminals";
+const SHOW_GIT_BRANCH = "sidebar.git.showBranch";
+const SHOW_GIT_CHANGES = "sidebar.git.showChanges";
+const SHOW_GIT_SYNC = "sidebar.git.showSync";
+const enabled = key => shared(key) !== false;
+const statusAtStart = () => shared(STATUS_POSITION_KEY) === "start";
+const statusOffset = () => statusAtStart() ? SPACE_STATUS_WIDTH + SPACE_GAP : 0;
+
+function statusCell(status, t) {
+  return div().w(SPACE_STATUS_WIDTH).flex_none().flex().justify_center()
+    .when(Boolean(status), el => el.child(mark(status, t)));
+}
 // A row shares one line between its name and its git tail: every segment keeps
 // one glyph, then they grow in turn until the line is full, so a long name
 // cannot crowd the branch out. Sheprd budgets its sidebar labels the same way.
@@ -554,6 +568,7 @@ export function mark(status, t) {
 
 export default class Spaces extends View {
   init(_props, cx) {
+    if (props()?.sidebarSettings) return;
     this.git = {}; // where() -> { name, branch, ahead, behind, repo, linked }, null: not a repo
     this.gitRecords = {}; // separate refs/worktree ages survive shared-cache eviction
     this.checked = {}; // where() -> when it was last looked at
@@ -600,7 +615,7 @@ export default class Spaces extends View {
     let folded;
     try { folded = JSON.parse(localStorage.getItem("machines.folded") ?? "[]"); } catch {}
     this.folded = new Set(Array.isArray(folded) ? folded.filter(m => m === null || typeof m === "string") : []);
-    this.foldedTerminals = new Set();
+    this.openTerminals = new Map();
     this.clearingFinished = new Set();
     this.finishedCounts = new Map();
     this.finishedRevision = 0;
@@ -764,6 +779,7 @@ export default class Spaces extends View {
   // Ask each connected machine for its load; a slow or away machine misses its
   // turn without holding the others up.
   refreshStats(cx) {
+    if (!enabled(SHOW_USAGE)) return;
     const now = Date.now();
     for (const m of [null, ...this.machines.filter(k => k.state === "connected").map(k => k.name)]) {
       const key = m ?? "";
@@ -788,6 +804,7 @@ export default class Spaces extends View {
   // started the server. One look at a time per machine, five seconds apart; a
   // machine that is away keeps the ports it had.
   refreshPorts(cx) {
+    if (!enabled(SHOW_PORTS)) return;
     const now = Date.now();
     for (const m of this.machineNames()) {
       const key = m ?? "";
@@ -1310,14 +1327,14 @@ export default class Spaces extends View {
       if (!terms?.length) return box;
       return v_flex().flex_none().child(box)
         .child(v_flex().id(`terminal-section-${id}`).ml(SPACE_MARGIN).mr(SCROLL_GUTTER).flex_none()
-          .children(this.terminalRows(id, terms, t, shown, r.tree)));
+          .children(this.terminalRows(id, terms, t, shown)));
     };
     const loading = m => {
       const layout = machines().find(k => k.name === m)?.layout;
       return layout === "loading" || (!layout && this.machines.some(k => k.name === m && k.state === "connected"))
         || spaces().some(s => (s.machine ?? null) === m && !this.shown.has(s.id));
     };
-    const loadingRow = m => h_flex().id(`machine-loading-${m ?? "local"}`).h(28).flex_none().ml(collapsed ? 0 : 20).mr(collapsed ? 0 : SCROLL_GUTTER).my(1).px(collapsed ? 0 : 8).items_center().when(collapsed, el => el.justify_center()).text_size(12).text_color(t.dim).child(collapsed ? "…" : "Loading…");
+    const loadingRow = m => h_flex().id(`machine-loading-${m ?? "local"}`).h(28).flex_none().ml(collapsed ? 0 : SPACE_MARGIN).mr(collapsed ? 0 : SCROLL_GUTTER).my(1).px(collapsed ? 0 : SPACE_PADDING).items_center().when(collapsed, el => el.justify_center()).text_size(12).text_color(t.dim).child(collapsed ? "…" : "Loading…");
     const machineNames = groups.map(group => group.m);
     return groups.flatMap(({ m, machine, repair, rebuilt, folded, rows }) => {
       const connected = !m || machine?.state === "connected";
@@ -1363,7 +1380,7 @@ export default class Spaces extends View {
         .child(icon())
         .child(div().flex_1().min_w_0().flex().items_center().gap(6)
           .child(div().min_w_0().truncate().child(m ?? "Local"))
-          .when(m === null && this.cupHere, el => el.child(cup()))
+          .when(m === null && this.cupHere && (enabled(SHOW_CUP) || this.cup !== "off"), el => el.child(cup()))
           .when(connected && !rebuilt, el => el.child(trash())))
         .when(machine?.keeps_running_after_logout === false, el => el.child(warning()))
         .when(!connected && !rebuilt && !login, el => el.child(div().flex_none().child((machine?.state ?? "asleep").replace(/_/g, " "))))
@@ -1422,8 +1439,8 @@ export default class Spaces extends View {
           .when(this.machinePress?.m === m && carrying, (el) => el.opacity(0.5))
           .when(carrying && this.machineOver?.m === m, (el) => el.child(drop()))
           .child(row1)
-          .child(this.usage(m, t, connected)));
-      const empty = h_flex().id(`machine-new-${m ?? "local"}`).h(28).flex_none().ml(collapsed ? 0 : 20).mr(collapsed ? 0 : SCROLL_GUTTER).my(1).px(collapsed ? 0 : 8).gap(7).items_center().rounded(4)
+          .when(enabled(SHOW_USAGE), el => el.child(this.usage(m, t, connected))));
+      const empty = h_flex().id(`machine-new-${m ?? "local"}`).h(28).flex_none().ml(collapsed ? 0 : SPACE_MARGIN).mr(collapsed ? 0 : SCROLL_GUTTER).my(1).px(collapsed ? 0 : SPACE_PADDING).gap(7).items_center().rounded(4)
         .text_size(12).text_color(t.dim).hover(s => s.bg(t.hover).text_color(t.foreground))
         .on_click(() => run("space.new", { machine: m ?? "" }))
         .when(collapsed, el => el.w(RAIL_CELL).rounded(4).justify_center().tooltip(`New space on ${m ?? "Local"}`)
@@ -1453,30 +1470,32 @@ export default class Spaces extends View {
   }
 
   unattachedSection(id, terms, t, shown) {
-    const open = !this.foldedTerminals.has(id);
+    const open = this.terminalsOpen(id);
     return v_flex().id(`terminal-section-${id}`).ml(SPACE_MARGIN).mr(SCROLL_GUTTER).flex_none()
       .child(h_flex().id(`terminals-${id}`).h(rowHeight({ tree: false })).my(1).px(SPACE_PADDING)
         .gap(SPACE_GAP).items_center().rounded(4).flex_none()
         .text_size(13).text_color(t.muted).cursor_pointer().hover(s => s.bg(t.hover))
         .on_click((_e, cx) => this.toggleTerminals(id, cx))
-        .child(h_flex().w(SPACE_STATUS_WIDTH).flex_none().items_center().justify_center()
-          .child(svg(`mods/workspace-chrome/chevron-${open ? "down" : "right"}.svg`).size(11).text_color(t.muted)))
-        .child(svg("mods/sidebar-spaces/unplug.svg").size(FOLDER_WIDTH).flex_none().text_color(t.dim))
-        .child(open ? "Unattached" : `Unattached ${terms.length}`))
+        .when(statusAtStart(), el => el.child(statusCell(null, t)))
+        .child(h_flex().w(SPACE_ICON_WIDTH).flex_none().items_center().justify_center()
+          .child(svg("mods/sidebar-spaces/unplug.svg").size(FOLDER_WIDTH).text_color(t.dim)))
+        .child(open ? "Unattached" : `Unattached ${terms.length}`)
+        .child(svg(`mods/workspace-chrome/chevron-${open ? "down" : "right"}.svg`).size(11).flex_none().text_color(t.muted)))
       .children(this.terminalRows(id, terms, t, shown));
   }
 
+  terminalsOpen(id) {
+    return this.openTerminals.get(id) ?? enabled(EXPAND_TERMINALS);
+  }
+
   toggleTerminals(id, cx) {
-    if (this.foldedTerminals.has(id)) this.foldedTerminals.delete(id);
-    else this.foldedTerminals.add(id);
+    this.openTerminals.set(id, !this.terminalsOpen(id));
     cx.notify();
   }
 
-  terminalRows(id, terms, t, shown, worktree = false) {
-    if (this.foldedTerminals.has(id)) return [];
-    const iconWidth = worktree ? BRANCH_WIDTH : FOLDER_WIDTH;
-    const statusGap = spaceTreeInset(worktree) - SPACE_PADDING - SPACE_STATUS_WIDTH;
-    const labelGap = SPACE_GAP + (iconWidth + TREE_STROKE_WIDTH) / 2 - TREE_COLUMN_WIDTH;
+  terminalRows(id, terms, t, shown) {
+    if (!this.terminalsOpen(id)) return [];
+    const leading = statusAtStart();
     return terminalTree(terms).map(({ term, lines }) => {
       const program = term.foreground?.name || term.program?.name || term.argv?.[0]?.split(/[\\/]/).pop();
       const title = term.name || term.template || program || term.address;
@@ -1485,7 +1504,7 @@ export default class Spaces extends View {
         ? image(iconPath).w(14).h(14).flex_none()
         : svg(iconPath || "mods/workspace-chrome/terminal.svg").size(14).flex_none().text_color(t.foreground);
       const status = term.status === "error" ? "blocked" : term.status;
-      return h_flex().id(`task-${term.address}`).h(26).my(1).pl(SPACE_PADDING).pr(6)
+      return h_flex().id(`task-${term.address}`).h(26).my(1).pl(leading ? SPACE_PADDING : SPACE_TREE_INSET).pr(SPACE_PADDING)
         .items_center().rounded(4).text_size(12).text_color(t.muted).cursor_pointer()
         .when(shown === term.address, el => el.bg(t.ansi5 + "33").text_color(t.foreground))
         .hover(s => s.bg(t.hover).text_color(t.foreground))
@@ -1501,10 +1520,9 @@ export default class Spaces extends View {
           run("terminal.peek", { terminal: term.address });
           viewedTerminalStatuses(terminals(), term.address);
         })
-        .child(div().w(SPACE_STATUS_WIDTH).mr(statusGap).flex_none().flex().justify_center()
-          .when(Boolean(status), el => el.child(mark(status, t))))
+        .when(leading, el => el.child(statusCell(status, t).mr(SPACE_TREE_INSET - SPACE_PADDING + SPACE_GAP)))
         .children(treeLines(lines, t))
-        .child(h_flex().ml(labelGap).flex_1().min_w(0).gap(8).items_center()
+        .child(h_flex().ml(4).flex_1().min_w(0).gap(8).items_center()
           .child(icon)
           .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(title)))
         .child(div().ml(4).size(18).flex_none()
@@ -1518,7 +1536,8 @@ export default class Spaces extends View {
               run("terminal.kill", { terminal: term.address });
               cx.notify();
             })
-            .child(svg("mods/workspace-chrome/x.svg").size(12)))));
+            .child(svg("mods/workspace-chrome/x.svg").size(12)))))
+        .when(!leading, el => el.child(statusCell(status, t).ml(SPACE_GAP)));
     });
   }
 
@@ -1562,7 +1581,8 @@ export default class Spaces extends View {
   row({ w, i, g, tree }, t, terminalCount) {
     const px = find(layout(), "sidebar")?.size?.px ?? Infinity;
     const id = `space-${w.id}`;
-    const open = !this.foldedTerminals.has(id);
+    const leading = statusAtStart();
+    const open = this.terminalsOpen(id);
     const fold = terminalCount > 0 ? h_flex().id(`terminals-${id}`).h(18).px(3).gap(3)
       .flex_none().items_center().rounded(4).cursor_pointer().text_size(11).text_color(t.muted)
       .hover(s => s.bg(t.hover).text_color(t.foreground))
@@ -1580,18 +1600,21 @@ export default class Spaces extends View {
       .child(svg(`mods/workspace-chrome/chevron-${open ? "down" : "right"}.svg`).size(11).flex_none())
       .when(!open, el => el.child(String(terminalCount))) : null;
     const foldWidth = fold ? 20 + (open ? 0 : 3 + String(terminalCount).length * 7) : 0;
-    const room = Math.max(0, px - (tree ? 118 : 96) - foldWidth);
+    const rowChrome = SPACE_MARGIN + SCROLL_GUTTER + SPACE_PADDING * 2 + SPACE_ICON_WIDTH + SPACE_STATUS_WIDTH + SPACE_GAP * 2;
+    const room = Math.max(0, px - rowChrome - foldWidth);
     const remote = g?.upstream?.includes("/") ? `\u25b8 ${g.upstream.slice(0, g.upstream.indexOf("/"))}` : "";
     // The tail reads as one segment, so the name keeps the larger share; the
     // counts keep their own colors, green ahead and red behind as starship's.
-    const tail = [g?.branch, remote].filter(Boolean).join(" ");
+    const tail = enabled(SHOW_GIT_BRANCH) ? [g?.branch, remote].filter(Boolean).join(" ") : "";
+    const showChanges = enabled(SHOW_GIT_CHANGES);
+    const showSync = enabled(SHOW_GIT_SYNC);
     const lines = this.nameLine([
       { text: w.name, color: t.foreground, size: 13 },
       ...(tail ? [{ text: tail, color: t.dim }] : []),
-      ...(g?.dirty > 0 ? [{ text: `*${g.dirty}`, color: t.ansi3, fixed: true }] : []),
-      ...(g?.conflicts > 0 ? [{ text: `\u2718${g.conflicts}`, color: t.ansi1, fixed: true }] : []),
-      ...(g?.ahead > 0 ? [{ text: `\u2191${g.ahead}`, color: t.ansi2, fixed: true }] : []),
-      ...(g?.behind > 0 ? [{ text: `\u2193${g.behind}`, color: t.ansi1, fixed: true }] : []),
+      ...(showChanges && g?.dirty > 0 ? [{ text: `*${g.dirty}`, color: t.ansi3, fixed: true }] : []),
+      ...(showChanges && g?.conflicts > 0 ? [{ text: `\u2718${g.conflicts}`, color: t.ansi1, fixed: true }] : []),
+      ...(showSync && g?.ahead > 0 ? [{ text: `\u2191${g.ahead}`, color: t.ansi2, fixed: true }] : []),
+      ...(showSync && g?.behind > 0 ? [{ text: `\u2193${g.behind}`, color: t.ansi1, fixed: true }] : []),
     ], room, fold);
     const fromIndex = this.pressed === null ? -1 : spaces().findIndex(s => s.id === this.pressed);
     return v_flex()
@@ -1636,10 +1659,11 @@ export default class Spaces extends View {
           .min_w(0)
           .gap(SPACE_GAP)
           .items_center()
-          .child(div().w(SPACE_STATUS_WIDTH).flex_none().flex().justify_center().when(Boolean(w.status), el => el.child(mark(w.status, t))))
-          .when(Boolean(tree), el => el.pl(WORKTREE_INDENT).child(svg("mods/workspace-chrome/branch.svg").size(BRANCH_WIDTH).flex_none().text_color(t.dim)))
-          .when(!tree, el => el.child(svg("mods/workspace-chrome/folder.svg").size(FOLDER_WIDTH).flex_none().text_color(t.dim)))
-          .when(Boolean(lines), el => el.child(lines)),
+          .when(leading, el => el.child(statusCell(w.status, t)))
+          .child(h_flex().w(SPACE_ICON_WIDTH).flex_none().items_center().justify_center()
+            .child(svg(`mods/workspace-chrome/${tree ? "branch" : "folder"}.svg`).size(tree ? BRANCH_WIDTH : FOLDER_WIDTH).text_color(t.dim)))
+          .child(lines ?? div().flex_1())
+          .when(!leading, el => el.child(statusCell(w.status, t))),
       );
   }
 
@@ -1648,7 +1672,7 @@ export default class Spaces extends View {
   spaceBox(row, t, terminalCount = 0) {
     const { w } = row;
     const on = w.active;
-    const has = Boolean(this.ports[w.machine ?? ""]?.[w.id]?.length);
+    const has = enabled(SHOW_PORTS) && Boolean(this.ports[w.machine ?? ""]?.[w.id]?.length);
     return v_flex()
       .id(`space-box-${w.id}`)
       .relative()
@@ -1661,9 +1685,9 @@ export default class Spaces extends View {
       .when(!on, (el) => el.hover((s) => s.bg(t.hover)))
       .when(this.pressed === w.id && this.over !== w.id, (el) => el.opacity(0.5))
       .child(this.row(row, t, terminalCount))
-      .when(has, el => el.child(this.portRow(w, t, row.tree)))
-      .when(has && terminalCount > 0 && !this.foldedTerminals.has(`space-${w.id}`), el => el.child(
-        div().id(`space-port-tree-${w.id}`).absolute().left(spaceTreeInset(row.tree)).bottom(-1)
+      .when(has, el => el.child(this.portRow(w, t)))
+      .when(has && terminalCount > 0 && this.terminalsOpen(`space-${w.id}`), el => el.child(
+        div().id(`space-port-tree-${w.id}`).absolute().left(SPACE_TREE_INSET + statusOffset()).bottom(-1)
           .w(TREE_STROKE_WIDTH).h(PORT_ROW_HEIGHT + 1).bg(t.dim),
       ));
   }
@@ -1672,7 +1696,7 @@ export default class Spaces extends View {
   // where that server answers. A port on another machine has no tunnel from
   // this side, so clicking it copies `host:port` instead of opening a page
   // that would not load.
-  portRow(w, t, tree) {
+  portRow(w, t) {
     const ports = this.ports[w.machine ?? ""]?.[w.id] ?? [];
     if (!ports.length) return null;
     const local = !w.machine;
@@ -1684,8 +1708,8 @@ export default class Spaces extends View {
       .flex_none()
       .w_full()
       .h(PORT_ROW_HEIGHT)
-      .px(8)
-      .pl(tree ? 75 : 56)
+      .pr(SPACE_PADDING)
+      .pl(SPACE_PADDING + SPACE_ICON_WIDTH + SPACE_GAP + statusOffset())
       .gap(5)
       .items_center()
       .overflow_hidden()
@@ -1736,6 +1760,7 @@ export default class Spaces extends View {
   }
 
   compact({ w }, t, number) {
+    const leading = statusAtStart();
     return railCell(h_flex()
       .id(`space-${w.id}`)
       .relative()
@@ -1748,11 +1773,64 @@ export default class Spaces extends View {
       .when(!w.active, (el) => el.hover((s) => s.bg(t.hover)))
       .on_click(() => run("space.select", { id: w.id }))
       .child(div().text_color(w.active ? t.foreground : t.muted).child(String(number)))
-      .child(div().absolute().right(5).text_color(tone(t, w.status)).child(glyph(w.status))));
+      .child(div().absolute().when(leading, el => el.left(5)).when(!leading, el => el.right(5))
+        .text_color(tone(t, w.status)).child(glyph(w.status))));
+  }
+
+  settingsDialog(t) {
+    const row = label => h_flex().h(34).px(11).gap(12).flex_none().items_center()
+      .child(div().flex_1().min_w(0).truncate().child(label));
+    const section = (title, rows) => v_flex().gap(5).flex_none()
+      .child(div().px(2).text_size(12).font_semibold().text_color(t.muted).child(title))
+      .child(v_flex().py(3).rounded(8).border_1().border_color(t.border).bg(t.surface).children(rows));
+    const toggle = (label, key) => {
+      const on = enabled(key);
+      return row(label).id(`setting-${key}`).rounded(6).cursor_pointer()
+        .hover(s => s.bg(t.hover)).on_click(() => setShared(key, !enabled(key)))
+        .child(div().w(32).h(18).p(2).flex_none().flex().items_center().rounded_full()
+          .bg(on ? t.accent : t.input)
+          .when(on, el => el.justify_end()).when(!on, el => el.justify_start())
+          .child(div().size(14).flex_none().rounded_full().bg(on ? t.accent_foreground : t.muted)));
+    };
+    const choices = (label, key, options, fallback = options[0][0]) => {
+      const selected = options.find(([id]) => id === shared(key))?.[0] ?? fallback;
+      return row(label).child(h_flex().p(2).gap(2).rounded(6).bg(t.input).flex_none()
+        .children(options.map(([id, text]) => div().id(`setting-${key}-${id}`).px(8).h(24).rounded(4)
+          .flex().items_center().cursor_pointer().text_size(12).text_color(id === selected ? t.foreground : t.muted)
+          .when(id === selected, el => el.bg(t.raised).font_semibold())
+          .when(id !== selected, el => el.hover(s => s.bg(t.hover).text_color(t.foreground)))
+          .on_click(() => setShared(key, id)).child(text))));
+    };
+    return v_flex().size_full().min_h(0).bg(t.popover).text_size(13).text_color(t.foreground)
+      .child(h_flex().h(53).flex_none().px(18).items_center().border_b(1).border_color(t.border)
+        .child(div().text_size(17).font_semibold().child("Sidebar Settings")))
+      .child(v_flex().id("sidebar-settings-scroll").flex_1().min_h(0).px(18).py(12).gap(12)
+        .overflow_y_scrollbar().mode("hover")
+        .child(section("General", [
+          choices("Status icon position", STATUS_POSITION_KEY, [["start", "Left"], ["end", "Right"]], "end"),
+          toggle("Git branch and remote", SHOW_GIT_BRANCH),
+          toggle("Git changes and conflicts", SHOW_GIT_CHANGES),
+          toggle("Git ahead and behind counts", SHOW_GIT_SYNC),
+        ]))
+        .child(section("Spaces", [
+          toggle("Machine CPU and memory", SHOW_USAGE),
+          toggle("Listening ports", SHOW_PORTS),
+          toggle("Expand child terminals by default", EXPAND_TERMINALS),
+          toggle("Show keep-awake button", SHOW_CUP).tooltip("The button stays visible while this Mac is being kept awake."),
+        ]))
+        .child(section("Agents", [
+          choices("Sort agents", "agents.sort", [["priority", "Priority"], ["grouped", "Grouped by space"]]),
+          toggle("Expand child agents by default", "sidebar.agents.expandChildren"),
+        ])))
+      .child(h_flex().h(48).flex_none().px(18).items_center().justify_end().border_t(1).border_color(t.border)
+        .child(div().id("settings-done").px(12).h(28).flex().items_center().rounded(6).cursor_pointer()
+          .bg(t.accent).text_color(t.accent_foreground).font_semibold().hover(s => s.opacity(0.9))
+          .on_click(() => closeOverlay(props().overlay)).child("Done")));
   }
 
   render() {
     const t = theme();
+    if (props()?.sidebarSettings) return this.settingsDialog(t);
     const collapsed = narrow();
     this.adoptGit();
     const palette = ["ansi6", "ansi3", "ansi4", "ansi5", "ansi2", "ansi1"];
@@ -1778,8 +1856,13 @@ export default class Spaces extends View {
       .child(h_flex().h(31).pl(16).pr(10).items_center().justify_between().text_size(11.5).text_color(t.dim)
         .when(collapsed, el => el.pl(0).pr(0).justify_center())
         .when(!collapsed, el => el.child("Spaces"))
-        .child(div().id("space-new").size(26).flex_none().flex().items_center().justify_center().rounded(6).hover(s => s.bg(t.hover).text_color(t.foreground))
-          .on_click(() => run("space.new")).child(svg("mods/workspace-chrome/plus.svg").size(14))))
+        .child(h_flex().items_center()
+          .when(!collapsed, el => el.child(div().id("sidebar-settings").size(26).flex_none().flex().items_center().justify_center()
+            .rounded(6).cursor_pointer().hover(s => s.bg(t.hover)).tooltip("Sidebar settings")
+            .on_click(() => openOverlay({ mod: "sidebar-spaces", kind: "dialog", width: 510, height: 590, props: { sidebarSettings: true } }))
+            .child(svg("mods/workspace-chrome/settings.svg").size(14))))
+          .child(div().id("space-new").size(26).flex_none().flex().items_center().justify_center().rounded(6).hover(s => s.bg(t.hover))
+            .on_click(() => run("space.new")).child(svg("mods/workspace-chrome/plus.svg").size(14)))))
       .child(v_flex().flex_1().min_h(0).pb(14).overflow_y_scrollbar().mode("always").track_scroll(this.scroll)
         .on_size_change((_size, cx) => { if (this.activeAt >= 0) { this.scroll.scroll_to_item(this.activeAt); cx.notify(); } })
         .on_mouse_up("left", (_e, cx) => { this.pressed = null; this.machinePress = null; this.machineOver = null; cx.notify(); })
