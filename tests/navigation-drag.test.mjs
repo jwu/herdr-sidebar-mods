@@ -92,6 +92,21 @@ test("Agents reveals a focused kept sub-agent through both folds", () => {
   assert.equal(p.instance.scroll.items.at(-1), 2);
 });
 
+test("a kept child's Done stays on its row while the parent stays Working", () => {
+  const p = agentsPanel();
+  p.data.terminals = [{ address: "t3", parent: "t1", state: "live", status: "idle" }];
+  const child = { address: "t3", pane: "p3", tab: "tab1", space: "s1", status: "done", seq: 4 };
+  p.data.agents.push(child);
+  let root = p.render();
+  assert.ok(byId(root, "sec-2"));
+  assert.equal(byId(root, "sec-3"), undefined);
+  assert.ok([...nodes(byId(root, "sub-t3"))].some(node => call(node, "bg")?.[1] === p.herdr.theme().done));
+  child.status = "blocked";
+  root = p.render();
+  assert.ok(byId(root, "sec-4"));
+  assert.equal(byId(root, "sec-2"), undefined);
+});
+
 test("Agents follows peek and agent-block focus, including pinned and reordered rows", () => {
   const p = agentsPanel();
   p.data.terminals = [{ address: "t3", parent: "t1", state: "live", status: "blocked" }];
@@ -112,8 +127,14 @@ test("Agents rail counts only rows and an unfocused list has no scroll target", 
   const p = agentsPanel();
   p.data.width = 76;
   p.data.focus = { terminal: "vps/t2" };
-  p.render();
+  let root = p.render();
   assert.equal(p.instance.activeAt, 1);
+  assert.ok(call(byId(root, "ag-vps/t2"), "bg"));
+  assert.equal(call(byId(root, "ag-t1"), "bg"), undefined);
+  p.data.focus = { terminal: "t1" };
+  root = p.render();
+  assert.ok(call(byId(root, "ag-t1"), "bg"));
+  assert.equal(call(byId(root, "ag-vps/t2"), "bg"), undefined);
   p.data.focus = null;
   p.render();
   assert.equal(p.instance.activeAt, -1);

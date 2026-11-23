@@ -89,6 +89,32 @@ const SCROLL_GUTTER = 11;
 const railCell = (el) => h_flex().flex_none().justify_center().child(el);
 const where = (s, ps) => JSON.stringify([s.machine ?? null, place(s, ps)]);
 
+// A kept terminal needs a space on its own machine. Match the built-in Peek.
+function keepTerminal(address) {
+  const slash = address.indexOf("/");
+  const machine = slash < 0 ? null : address.slice(0, slash);
+  const there = spaces().filter(s => (s.machine ?? null) === machine);
+  if (!there.length) {
+    window().push_toast({ title: "No space on this terminal's machine", level: "error" });
+    return;
+  }
+  if (!there.some(s => s.active)) {
+    const byAddress = new Map(terminals().map(term => [term.address, term]));
+    const tabByTerminal = new Map(panes().map(p => [p.terminal, p.tab]));
+    const seen = new Set([address]);
+    let parent = byAddress.get(address)?.parent;
+    let target;
+    while (parent && !seen.has(parent) && !target) {
+      seen.add(parent);
+      const tab = tabByTerminal.get(parent);
+      target = there.find(s => s.tabs.some(t => t.id === tab));
+      parent = byAddress.get(parent)?.parent;
+    }
+    run("space.select", { id: (target ?? there[0]).id });
+  }
+  run("terminal.keep", { terminal: address, place: "tab" });
+}
+
 // A peek does not clear the core's Done report. Remember the viewed turn
 // across both panels and let the next turn display Done again.
 function viewedTerminalStatuses(all, shown) {
@@ -211,8 +237,9 @@ function readGitStore() {
 function gitRecordOf(r) {
   if (!r || typeof r !== "object" || !Number.isFinite(r.at) || r.at <= 0) return null;
   if (Date.now() - r.at > GIT_STALE) return null;
-  if (r.info !== null) {
-    const g = r.info;
+  let info = r.info;
+  if (info !== null) {
+    const g = info;
     if (!g || typeof g !== "object" || Array.isArray(g) || typeof g.name !== "string"
       || (g.branch !== null && typeof g.branch !== "string")
       || (g.upstream !== null && typeof g.upstream !== "string")
@@ -220,13 +247,14 @@ function gitRecordOf(r) {
     try {
       const repo = JSON.parse(g.repo);
       if (!Array.isArray(repo) || repo.length !== 2 || (repo[0] !== null && typeof repo[0] !== "string") || typeof repo[1] !== "string") return null;
+      if (g.name === ".bare" && repo[1].endsWith("/.bare")) info = { ...g, name: gitRepoName(repo[1]) };
     } catch { return null; }
   }
   return {
     at: r.at,
     refsAt: Number.isFinite(r.refsAt) ? r.refsAt : 0,
     dirtyAt: Number.isFinite(r.dirtyAt) ? r.dirtyAt : 0,
-    info: r.info ?? null,
+    info: info ?? null,
     unsure: r.unsure === true,
   };
 }
@@ -282,7 +310,9 @@ function claimGit(key) {
 // The repo's own name: its .git folder names it, and a worktree's top differs.
 function gitRepoName(repo) {
   const last = (path) => path.replace(/\/+$/, "").split("/").pop();
-  return repo.endsWith("/.git") ? last(repo.slice(0, -5)) : last(repo).replace(/\.git$/, "");
+  if (repo.endsWith("/.git")) return last(repo.slice(0, -5));
+  if (repo.endsWith("/.bare")) return last(repo.slice(0, -6)) || ".bare";
+  return last(repo).replace(/\.git$/, "");
 }
 
 // A `status --porcelain=v2 --branch` answer: branch, upstream, ahead/behind and
@@ -1540,7 +1570,7 @@ export default class Spaces extends View {
             .on_click((_e, cx) => {
               cx.stop_propagation();
               this.hoveredChild = null;
-              run("terminal.keep", { terminal: term.address, place: "tab" });
+              keepTerminal(term.address);
               cx.notify();
             })
             .child(svg("mods/sidebar-spaces/keep.svg").size(12)))))

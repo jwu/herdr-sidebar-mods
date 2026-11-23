@@ -252,6 +252,9 @@ test("Agents preserves brackets, removes status marks, and rejects path/id title
   assert.equal(title("[ ! ] Needs input"), "Needs input");
   assert.equal(title("[ . ] Thinking"), "Thinking");
   assert.equal(title("⠋ - Thinking"), "Thinking");
+  assert.equal(title("🔴 Login"), "🔴 Login");
+  assert.equal(title("❤️ Deploy"), "❤️ Deploy");
+  assert.equal(title("[ ! ] ⏳️ 🔴 Login"), "🔴 Login");
   for (const path of ["~/project", "/home/project", "C:\\project", "✦ ~/project", "t1"]) {
     assert.equal(title(path), "Claude", path);
   }
@@ -322,6 +325,7 @@ test("Agents shows a plain terminal as the parent of a reporting child agent", (
   const attached = { address: "t1", pane: "p1", space: "home", tab: "tab", status: "idle", seq: 1 };
   const { instance, context, herdr } = init("sidebar-agents", {
     agents: () => [attached],
+    spaces: () => [{ id: "home", active: true, tabs: [{ id: "tab" }] }],
     panes: () => [{ pane: "p1", terminal: "t1" }, { pane: "p2", terminal: "t2", cwd: "/work/current-project" }],
     terminals: () => [
       { address: "t3", parent: "t2", name: "pi-test", state: "live", status: "idle" },
@@ -371,6 +375,46 @@ test("Agents shows a plain terminal as the parent of a reporting child agent", (
   herdr.layout = () => ({ id: "sidebar", size: { px: 76 } });
   root = instance.render(context);
   assert.ok(byId(root, "ag-t3"));
+});
+
+test("both sidebars keep child terminals in a space on their machine", () => {
+  const local = { id: "local", name: "Local", active: true, tabs: [] };
+  const first = { id: "vps/first", name: "First", machine: "vps", tabs: [{ id: "vps/first-tab" }] };
+  const home = { id: "vps/home", name: "Home", machine: "vps", tabs: [{ id: "vps/tab" }] };
+  const parent = { address: "vps/t1", pane: "vps/p1", tab: "vps/tab", space: home.id, status: "working" };
+  const child = { address: "vps/t3", parent: "vps/t2", state: "live", status: "idle" };
+  for (const [name, rowId] of [["sidebar-spaces", "task-vps/t3"], ["sidebar-agents", "sub-vps/t3"]]) {
+    const calls = [];
+    const toasts = [];
+    const { instance, context, herdr } = init(name, {
+      spaces: () => [local, first, home],
+      panes: () => [{ pane: parent.pane, tab: parent.tab, terminal: parent.address }],
+      agents: () => [parent],
+      terminals: () => [child, { address: "vps/t2", parent: parent.address, state: "live" }],
+      run: (command, args) => calls.push([command, args.id ?? args.terminal, args.place]),
+    });
+    const keep = ["terminal.keep", child.address, "tab"];
+    const clickKeep = () => {
+      calls.length = 0;
+      const render = () => instance.render(context);
+      uiState(byId(render(), rowId)).handlers.on_mouse_move({}, context);
+      uiState(byId(render(), "keep-child-vps/t3")).handlers.on_click({}, { ...context, stop_propagation() {} });
+    };
+    clickKeep();
+    assert.deepEqual(calls, [["space.select", home.id, undefined], keep], name);
+    herdr.spaces = () => [{ ...local, active: false }, { ...first, active: true }, home];
+    clickKeep();
+    assert.deepEqual(calls, [keep], name);
+    herdr.spaces = () => [local, first, home];
+    herdr.panes = () => [{ pane: parent.pane, tab: "missing-tab", terminal: parent.address }];
+    clickKeep();
+    assert.deepEqual(calls, [["space.select", first.id, undefined], keep], name);
+    herdr.spaces = () => [local];
+    herdr.window = () => ({ platform: "macos", push_toast: toast => toasts.push(toast) });
+    clickKeep();
+    assert.deepEqual(calls, [], name);
+    assert.equal(toasts.length, 1, name);
+  }
 });
 
 test("viewing a completed child clears that turn in both sidebars", () => {

@@ -120,6 +120,28 @@ test("a place one panel looked at shows in the other without asking Git", async 
   assert.equal(agents.instance.gitAt[key], store.places()[key].at);
 });
 
+test("both panels name worktrees from a hidden bare repo after its project", async () => {
+  const store = sharedStore();
+  const key = keyOf(null, "/repo/worktree");
+  const common = "/repo/.bare";
+  const git = responds({ "/repo/worktree": { common: { code: 0, stdout: common + "\n" } } });
+  const spaces = panel("sidebar-spaces", store, { exec: git.exec });
+  spaces.instance.gitWalk.add(key);
+  await spaces.instance.check(key, spaces.context);
+  assert.equal(spaces.instance.git[key].name, "repo");
+  assert.equal(spaces.instance.git[key].linked, true);
+
+  // A previous version's shared cache still has the old name.
+  const previous = store.places()[key];
+  store.seed({ [key]: { ...previous, info: { ...previous.info, name: ".bare" } } });
+  const agents = panel("sidebar-agents", store, { exec: git.exec });
+  agents.instance.places = () => [[key, { on: null, cwd: "/repo/worktree" }]];
+  agents.instance.refreshGit(agents.context);
+  await agents.context.flush();
+  assert.equal(agents.instance.git[key].name, "repo");
+  assert.equal(git.calls.length, 3, "the old cache can be used without asking Git again");
+});
+
 test("a look the other panel just took stands in for a queued one", async () => {
   const store = sharedStore();
   const key = keyOf(null, "/queued");

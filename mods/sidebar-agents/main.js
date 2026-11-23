@@ -63,8 +63,8 @@ function toggleSidebar() {
   run("layout.resize", { id: "sidebar", px: narrow() ? (shared("sidebar.width") ?? 268) : window()?.platform === "macos" ? 76 : 44 });
 }
 
-// Keep opening brackets/quotes in real titles, but drop Codex's status prefix.
-const clean = (s) => (s ?? "").replace(/^[^\p{L}\p{N}\p{Ps}\p{Pi}]+/u, "").replace(/^\[ [!.] \] /, "").trim();
+// Keep opening brackets, quotes and emoji in real titles. Strip known status marks.
+const clean = (s) => (s ?? "").replace(/^(?:\[ [!.] \] |[✋⏳]\uFE0F?(?=\s)|(?!(?:\p{Emoji}\uFE0F|[#*]\u20E3))[^\p{L}\p{N}\p{Ps}\p{Pi}\p{Emoji_Presentation}])+/u, "").trim();
 
 // Rows in both sidebars use 26px cells with 1px margins. Extend each
 // vertical stroke into those margins so adjacent rows meet.
@@ -76,6 +76,32 @@ function treeLines(lines, t) {
       .when(line === "└", stroke => stroke.h(15).border_b(TREE_STROKE_WIDTH).rounded_bl(5))
       .when(line !== "└", stroke => stroke.bottom(-1))))
     .when(line === "├", el => el.child(div().absolute().left(TREE_STROKE_WIDTH).right(0).top(12.5).h(TREE_STROKE_WIDTH).bg(color))));
+}
+
+// A kept terminal needs a space on its own machine. Match the built-in Peek.
+function keepTerminal(address) {
+  const slash = address.indexOf("/");
+  const machine = slash < 0 ? null : address.slice(0, slash);
+  const there = spaces().filter(s => (s.machine ?? null) === machine);
+  if (!there.length) {
+    window().push_toast({ title: "No space on this terminal's machine", level: "error" });
+    return;
+  }
+  if (!there.some(s => s.active)) {
+    const byAddress = new Map(terminals().map(term => [term.address, term]));
+    const tabByTerminal = new Map(panes().map(p => [p.terminal, p.tab]));
+    const seen = new Set([address]);
+    let parent = byAddress.get(address)?.parent;
+    let target;
+    while (parent && !seen.has(parent) && !target) {
+      seen.add(parent);
+      const tab = tabByTerminal.get(parent);
+      target = there.find(s => s.tabs.some(t => t.id === tab));
+      parent = byAddress.get(parent)?.parent;
+    }
+    run("space.select", { id: (target ?? there[0]).id });
+  }
+  run("terminal.keep", { terminal: address, place: "tab" });
 }
 
 // A peek does not clear the core's Done report. Remember the viewed turn
@@ -180,8 +206,9 @@ function readGitStore() {
 function gitRecordOf(r) {
   if (!r || typeof r !== "object" || !Number.isFinite(r.at) || r.at <= 0) return null;
   if (Date.now() - r.at > GIT_STALE) return null;
-  if (r.info !== null) {
-    const g = r.info;
+  let info = r.info;
+  if (info !== null) {
+    const g = info;
     if (!g || typeof g !== "object" || Array.isArray(g) || typeof g.name !== "string"
       || (g.branch !== null && typeof g.branch !== "string")
       || (g.upstream !== null && typeof g.upstream !== "string")
@@ -189,13 +216,14 @@ function gitRecordOf(r) {
     try {
       const repo = JSON.parse(g.repo);
       if (!Array.isArray(repo) || repo.length !== 2 || (repo[0] !== null && typeof repo[0] !== "string") || typeof repo[1] !== "string") return null;
+      if (g.name === ".bare" && repo[1].endsWith("/.bare")) info = { ...g, name: gitRepoName(repo[1]) };
     } catch { return null; }
   }
   return {
     at: r.at,
     refsAt: Number.isFinite(r.refsAt) ? r.refsAt : 0,
     dirtyAt: Number.isFinite(r.dirtyAt) ? r.dirtyAt : 0,
-    info: r.info ?? null,
+    info: info ?? null,
     unsure: r.unsure === true,
   };
 }
@@ -251,7 +279,9 @@ function claimGit(key) {
 // The repo's own name: its .git folder names it, and a worktree's top differs.
 function gitRepoName(repo) {
   const last = (path) => path.replace(/\/+$/, "").split("/").pop();
-  return repo.endsWith("/.git") ? last(repo.slice(0, -5)) : last(repo).replace(/\.git$/, "");
+  if (repo.endsWith("/.git")) return last(repo.slice(0, -5));
+  if (repo.endsWith("/.bare")) return last(repo.slice(0, -6)) || ".bare";
+  return last(repo).replace(/\.git$/, "");
 }
 
 // A `status --porcelain=v2 --branch` answer: branch, upstream, ahead/behind and
@@ -698,7 +728,7 @@ export default class Agents extends View {
           .on_click((_e, cx) => {
             cx.stop_propagation();
             this.hoveredChild = null;
-            run("terminal.keep", { terminal: k.address, place: "tab" });
+            keepTerminal(k.address);
             cx.notify();
           })
           .child(svg("mods/sidebar-agents/keep.svg").size(12))))))
@@ -819,7 +849,14 @@ export default class Agents extends View {
     const tabCounts = new Map();
     for (const a of list) tabCounts.set(a.tab, (tabCounts.get(a.tab) ?? 0) + 1);
     const byPriority = sort.id === "priority";
-    const urgency = new Map(list.map((a) => [a.address, Math.max(this.rank(a), ...this.tree(all, a.address).map((s) => RANK[kidStatus(s.t, this.listed)] ?? 0))]));
+    const urgency = new Map(list.map(a => {
+      const childRanks = this.tree(all, a.address).map(({ t }) => {
+        const status = kidStatus(t, this.listed);
+        // Done belongs to the child. A plain terminal header has no status of its own.
+        return status === "done" && !a.terminalParent ? RANK.idle : (RANK[status] ?? 0);
+      });
+      return [a.address, Math.max(this.rank(a), ...childRanks)];
+    }));
     const rankOf = (a) => urgency.get(a.address);
     const sinceOf = (a) => a.terminalParent ? this.since({ address: a.childAddress }) : this.since(a);
     if (byPriority) list = [...list].sort((x, y) => rankOf(y) - rankOf(x) || sinceOf(y) - sinceOf(x) || y.seq - x.seq);
@@ -890,24 +927,28 @@ export default class Agents extends View {
       const open = () => {
         if (a.pane) run("pane.focus", { pane: a.pane });
         else if (a.terminalParent) this.peek(a.address);
-        else run("terminal.keep", { terminal: a.address, place: "tab" });
+        else keepTerminal(a.address);
       };
       // An agent on another machine (`vps/t7`) says which.
       const machine = a.address.includes("/") ? a.address.split("/")[0] : null;
       if (collapsed) {
+        const on = a.address === active;
         const status = h_flex().w(14).flex_none().items_center().justify_center().child(this.status(t, a, true));
         return h_flex()
           .id(`ag-${a.address}`)
           .h(26)
-          .px(8)
+          .mx(6)
+          .px(2)
+          .rounded(6)
           .flex_none()
           .items_center()
           .gap(4)
+          .when(on, el => el.bg(t.ansi5 + "33"))
           .hover((s) => s.bg(t.hover))
           .on_click(open)
           .tooltip(label(a))
           .when(leading, el => el.child(status))
-          .child(div().flex_1().min_w(0).whitespace_nowrap().text_right().text_color(t.muted).child(String(i + 1)))
+          .child(div().flex_1().min_w(0).whitespace_nowrap().text_right().text_color(on ? t.foreground : t.muted).child(String(i + 1)))
           .when(!leading, el => el.child(status));
       }
       const when = this.since(a);
