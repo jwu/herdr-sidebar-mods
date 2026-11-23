@@ -618,7 +618,9 @@ export default class Spaces extends View {
     this.pressed = null;
     this.over = null;
     this.scroll = ScrollHandle.new();
+    this.scrollSize = null;
     this.activeAt = -1;
+    this.machineFoldChanged = false;
     this.machines = [];
     this.stats = {}; // machine -> { cpu, mem, cores }, percentages or null
     this.history = {}; // machine -> its last CPU shares, oldest first
@@ -1380,6 +1382,7 @@ export default class Spaces extends View {
       const toggle = (cx) => {
         if (collapsed && login) { run("app.settings", { section: "machines" }); return; }
         folded ? this.folded.delete(m) : this.folded.add(m);
+        this.machineFoldChanged = true;
         localStorage.setItem("machines.folded", JSON.stringify([...this.folded]));
         cx.notify();
       };
@@ -1896,11 +1899,12 @@ export default class Spaces extends View {
     if (changed && !checking()) setShared("space.colors", kept);
     const list = this.grouped(t, collapsed);
     const active = sp.find(p => p.active)?.id;
-    if (active !== this.revealed || this.activeAt !== this.revealedAt) {
-      this.revealed = active;
-      this.revealedAt = this.activeAt;
-      if (this.activeAt >= 0) this.scroll.scroll_to_item(this.activeAt);
-    }
+    // Folding can move the active row without changing the selected space.
+    const reveal = active !== this.revealed || (!this.machineFoldChanged && this.activeAt !== this.revealedAt);
+    this.machineFoldChanged = false;
+    this.revealed = active;
+    this.revealedAt = this.activeAt;
+    if (reveal && this.activeAt >= 0) this.scroll.scroll_to_item(this.activeAt);
     return v_flex().size_full().min_h(0).bg(t.chrome).text_size(13)
       .child(h_flex().h(31).pl(16).pr(10).items_center().justify_between().text_size(11.5).text_color(t.dim)
         .when(collapsed, el => el.pl(0).pr(0).justify_center())
@@ -1913,7 +1917,12 @@ export default class Spaces extends View {
           .child(div().id("space-new").size(26).flex_none().flex().items_center().justify_center().rounded(6).hover(s => s.bg(t.hover))
             .on_click(() => run("space.new")).child(svg("mods/workspace-chrome/plus.svg").size(14)))))
       .child(v_flex().flex_1().min_h(0).pb(14).overflow_y_scrollbar().mode("always").track_scroll(this.scroll)
-        .on_size_change((_size, cx) => { if (this.activeAt >= 0) { this.scroll.scroll_to_item(this.activeAt); cx.notify(); } })
+        .on_size_change((size, cx) => {
+          // Herdr can report the same viewport size again after a list update.
+          if (size.width === this.scrollSize?.width && size.height === this.scrollSize?.height) return;
+          this.scrollSize = size;
+          if (this.activeAt >= 0) { this.scroll.scroll_to_item(this.activeAt); cx.notify(); }
+        })
         .on_mouse_up("left", (_e, cx) => { this.pressed = null; this.machinePress = null; this.machineOver = null; cx.notify(); })
         .children(list));
   }

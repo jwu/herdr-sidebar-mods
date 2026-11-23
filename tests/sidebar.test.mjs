@@ -312,12 +312,41 @@ test("Spaces scroll follows displayed machine order and reacts to resize", () =>
   assert.equal(instance.activeAt, 1);
   assert.deepEqual(instance.scroll.items, [3, 1]);
   const area = [...nodes(root)].find(n => uiState(n).handlers.on_size_change);
-  uiState(area).handlers.on_size_change({ width: 300, height: 200 }, context);
-  assert.deepEqual(instance.scroll.items, [3, 1, 1]);
+  const resize = uiState(area).handlers.on_size_change;
+  resize({ width: 300, height: 200 }, context);
+  resize({ width: 300, height: 180 }, context);
+  assert.deepEqual(instance.scroll.items, [3, 1, 1, 1]);
   instance.folded.add("vps");
   instance.render(context);
   assert.equal(instance.activeAt, -1);
-  assert.deepEqual(instance.scroll.items, [3, 1, 1], "a hidden row has no scroll target");
+  assert.deepEqual(instance.scroll.items, [3, 1, 1, 1], "a hidden row has no scroll target");
+});
+
+test("Spaces machine folds leave manual scrolling alone", () => {
+  const { instance, context, herdr } = spacePanel();
+  let root = instance.render(context);
+  const size = { width: 300, height: 200 };
+  const resize = () => {
+    const area = [...nodes(root)].find(n => uiState(n).handlers.on_size_change);
+    uiState(area).handlers.on_size_change({ ...size }, context);
+  };
+  resize();
+  for (const [machine, activeRows] of [["local", [2, 3]], ["vps", [-1, 3]]]) {
+    for (const activeAt of activeRows) {
+      const { handlers } = uiState(byId(root, `machine-${machine}`));
+      handlers.on_mouse_down({}, context);
+      handlers.on_mouse_up({}, context);
+      root = instance.render(context);
+      assert.equal(instance.activeAt, activeAt);
+      resize(); // Herdr can report the same viewport size again after a fold.
+      assert.deepEqual(instance.scroll.items, [3, 3]);
+    }
+  }
+  instance.render(context);
+  assert.deepEqual(instance.scroll.items, [3, 3]);
+  herdr.spaces = () => spaces.map(s => ({ ...s, active: s.id === "local" }));
+  instance.render(context);
+  assert.deepEqual(instance.scroll.items, [3, 3, 1]);
 });
 
 test("Agents shows a plain terminal as the parent of a reporting child agent", () => {
