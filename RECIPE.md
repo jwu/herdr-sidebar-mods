@@ -1,10 +1,10 @@
-# Sidebar: machines with load, spaces with git, agents with state
+# Ultimate Sidebar
 
-A replacement for the left sidebar's Spaces and Agents panels in the Herdr
-desktop app. Every machine header carries a second line with its CPU sparkline
-and memory meter; every space row carries its branch and tracked remote; every
-space and agent row leads with its state icon, and a row you select turns a
-quiet purple instead of gray.
+Ultimate Sidebar (herdr-sidebar-mods) replaces the built-in Spaces and Agents
+panels with two Herdr sidebar mods. The sidebar-spaces panel shows CPU and
+memory for local and remote machines, Git branch and worktree status, and
+listening ports. The sidebar-agents panel shows agent status and adds a macOS
+Dock badge.
 
 ![The two panels](preview.png)
 
