@@ -18,18 +18,19 @@ In `~/.config/herdr-app/layouts/sidebar.json`, change the `spaces` block’s `mo
 
 ### Optional pane header
 
-Use `pane-send-back` to show the program icon, program name, short `hc` terminal ID, and working path in each terminal pane header. Click the ID to copy the full address, including the machine name for a remote terminal. For example, ask an agent to run `hc read t7 --lines 100` to see the pane’s recent output. A child terminal with a live parent also has a **Send back** button that parks the child.
+`pane-header` shows the program icon, pane name, short `hc` terminal ID, and working directory. On Herdr App 0.1.17 and later, names set with **Rename** take precedence. Click the ID to copy the full address, including the machine name for a remote terminal. For example, ask an agent to run `hc read t7 --lines 100` to see the pane’s recent output. A child terminal with a live parent also has a **Send back** button that parks the child.
 
 ```sh
-cp -R mods/pane-send-back ~/.config/herdr-app/mods/
+mkdir -p ~/.config/herdr-app/mods
+cp -R mods/pane-header ~/.config/herdr-app/mods/
 ```
 
-In your personal layout, set `content.pane.header.content.mod` to `pane-send-back` on the block whose `content.tab` is `"active"`. If that block has no pane header, add this to its `content` object alongside `"tab": "active"`.
+In your personal layout, set `content.pane.header.content.mod` to `pane-header` on the block whose `content.tab` is `"active"`. If that header still references `pane-send-back` or `pane-title-bar`, change it to `pane-header`. If the block has no pane header, add this to its `content` object alongside `"tab": "active"`.
 
 ```json
 "pane": {
   "header": {
-    "content": { "mod": "pane-send-back" },
+    "content": { "mod": "pane-header" },
     "reveal": "always",
     "height": 30,
     "position": "top"

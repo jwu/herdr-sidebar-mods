@@ -1,8 +1,8 @@
 // A pane's header, for layouts that frame their panes:
-//   { "tab": "active", "pane": { "header": { "content": { "mod": "pane-send-back" } } } }
-// Shows the program's icon (the app's program table), the agent's name or
-// the terminal's title, the folder, and the agent's status; buttons split, zoom and close
-// this pane. Props from the app: { pane, terminal }. Click: focus the pane.
+//   { "tab": "active", "pane": { "header": { "content": { "mod": "pane-header" } } } }
+// Shows the program icon, pane name or terminal title, terminal ID, folder, and agent status.
+// Buttons split, zoom, close, or send a child terminal back to its parent.
+// Props from the app: { pane, terminal }. Click the header to focus the pane.
 
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
@@ -53,14 +53,14 @@ export default class Pane extends View {
         cx.stop_propagation();
         run(command, args);
       })
-      .child(svg(`mods/pane-send-back/${icon}.svg`).size(14));
+      .child(svg(`mods/pane-header/${icon}.svg`).size(14));
   }
 
   render(cx) {
     const t = theme();
     const p = this.me();
     if (!p) return div();
-    const name = ((p.program?.agent || p.program?.shell) && p.program.name) || p.title || p.program?.name || "shell";
+    const name = p.name || ((p.program?.agent || p.program?.shell) && p.program.name) || p.title || p.program?.name || "shell";
     const pic = icon(p.program, 14, t.dim);
     const st = p.status;
     const pane = p.pane;
@@ -109,6 +109,6 @@ export default class Pane extends View {
           cx.stop_propagation();
           run("terminal.park", { terminal: term.address });
         })
-        .child(svg("mods/pane-send-back/send-back.svg").size(14))));
+        .child(svg("mods/pane-header/send-back.svg").size(14))));
   }
 }

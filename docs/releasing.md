@@ -10,7 +10,7 @@ for new features, and a major release for breaking changes after 1.0.
    node --test tests/*.test.mjs
    herdr-app check mods/sidebar-spaces
    herdr-app check mods/sidebar-agents
-   herdr-app check mods/pane-send-back
+   herdr-app check mods/pane-header
    ```
 
 3. Create and push a version tag. Replace `v0.1.0` with the version you intend to publish.
