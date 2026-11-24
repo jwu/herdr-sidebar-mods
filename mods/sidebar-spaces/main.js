@@ -6,26 +6,19 @@
 
 import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
-import * as fs from "fs/promises";
-import { spaces, machines, panes, terminals, focused, run, openOverlay, closeOverlay, props, exec, hc, appHome, theme, shared, setShared, watchFolder, window, layout, nextCommand, checking, notify } from "herdr";
-
-// Whether the platform presents the window (Herdr 0.1.18+). Older Herdr has no
-// flag, so only an explicit false pauses the polls.
-const shown = () => window()?.visible !== false;
+import { spaces, machines, panes, terminals, focused, run, openOverlay, props, exec, hc, appHome, theme, shared, setShared, watchFolder, window, nextCommand, checking, notify } from "herdr";
+import {
+  sidebarPx, narrow, shown, GLYPH, SEG_GAP, SCROLL_GUTTER, fit, segmentBudgets,
+  TREE_STROKE_WIDTH, treeLines, machineOf, keepTerminal, viewedTerminalStatuses, mark,
+  SHOW_USAGE, SHOW_PORTS, SHOW_CUP, EXPAND_TERMINALS,
+  SHOW_GIT_BRANCH, SHOW_GIT_CHANGES, SHOW_GIT_SYNC, enabled, statusAtStart,
+  GIT_DIRTY_EVERY, GIT_REFS_EVERY, gitKey, checkGit, latestGitRecord, readGitStore, gitRecordOf, writeGitStore,
+} from "./shared.js";
+import { hostOf, sampleScript, sampleSections, parsePorts, parseStats } from "./probe.js";
+import { CUP_PID, CUP_VERIFY, hasCaffeinate, cupPidAlive, readCupPid, removeCupPid, changeCupHold } from "./cup.js";
+import { settingsButton, settingsDialog } from "./settings.js";
 
 const openSettings = () => openOverlay({ mod: "sidebar-spaces", kind: "dialog", width: 510, height: 590, props: { sidebarSettings: true } });
-
-function find(node, id) {
-  if (node?.id === id) return node;
-  for (const child of node?.children ?? []) {
-    const found = find(child, id);
-    if (found) return found;
-  }
-  return null;
-}
-
-// The sidebar's rail goes by its width, not a flag: dragging its edge narrows it too.
-const narrow = () => (find(layout(), "sidebar")?.size?.px ?? Infinity) < 160;
 
 // Where a space is now: its first terminal's live folder, else where it was made.
 // `ps`: panes(), read once by the caller (each read copies every pane).
@@ -41,103 +34,18 @@ const SPACE_STATUS_WIDTH = 16;
 const SPACE_ICON_WIDTH = 20;
 const FOLDER_WIDTH = 16;
 const BRANCH_WIDTH = 13;
-const TREE_STROKE_WIDTH = 1.5;
-const TREE_COLUMN_WIDTH = 13;
 const PORT_ROW_HEIGHT = 18;
 
 const SPACE_TREE_INSET = SPACE_PADDING + (SPACE_ICON_WIDTH - TREE_STROKE_WIDTH) / 2;
-const STATUS_POSITION_KEY = "sidebar.statusPosition";
-const SHOW_USAGE = "sidebar.spaces.showUsage";
-const SHOW_PORTS = "sidebar.spaces.showPorts";
-const SHOW_CUP = "sidebar.spaces.showCup";
-const EXPAND_TERMINALS = "sidebar.spaces.expandTerminals";
-const SHOW_GIT_BRANCH = "sidebar.git.showBranch";
-const SHOW_GIT_CHANGES = "sidebar.git.showChanges";
-const SHOW_GIT_SYNC = "sidebar.git.showSync";
-const enabled = key => shared(key) !== false;
-const statusAtStart = () => shared(STATUS_POSITION_KEY) === "start";
 const statusOffset = () => statusAtStart() ? SPACE_STATUS_WIDTH + SPACE_GAP : 0;
 
 function statusCell(status, t) {
   return div().w(SPACE_STATUS_WIDTH).flex_none().flex().justify_center()
     .when(Boolean(status), el => el.child(mark(status, t)));
 }
-// A row shares one line between its name and its git tail: every segment keeps
-// one glyph, then they grow in turn until the line is full, so a long name
-// cannot crowd the branch out. Sheprd budgets its sidebar labels the same way.
-const GLYPH = 8;
-const fit = (text, glyphs) => (text.length <= glyphs ? text : `${text.slice(0, Math.max(0, glyphs - 1))}\u2026`);
-// The tail is cut to its budget and then sized by its own text, so it ends at
-// the row's right edge instead of at the end of a wider measured cell.
-const SEG_GAP = 6;
-function segmentBudgets(lengths, available) {
-  const budgets = lengths.map((n) => (n > 0 ? 1 : 0));
-  let left = available - budgets.reduce((a, b) => a + b, 0);
-  while (left > 0) {
-    let grew = false;
-    for (let i = 0; i < budgets.length; i++) {
-      if (budgets[i] > 0 && budgets[i] < lengths[i]) {
-        budgets[i]++;
-        left--;
-        grew = true;
-        if (left === 0) break;
-      }
-    }
-    if (!grew) break;
-  }
-  return budgets;
-}
 const RAIL_CELL = 32;
-// How far the bar's lane reaches in from the right edge (it is 6pt wide, drawn
-// 4.5pt in): header controls, selection boxes and empty rows stop exactly where
-// it starts, so nothing sits under it and nothing leaves a visible gap.
-const SCROLL_GUTTER = 11;
 const railCell = (el) => h_flex().flex_none().justify_center().child(el);
-const where = (s, ps) => JSON.stringify([s.machine ?? null, place(s, ps)]);
-
-// A kept terminal needs a space on its own machine. Match the built-in Peek.
-function keepTerminal(address) {
-  const slash = address.indexOf("/");
-  const machine = slash < 0 ? null : address.slice(0, slash);
-  const there = spaces().filter(s => (s.machine ?? null) === machine);
-  if (!there.length) {
-    notify({ title: "No space on this terminal's machine", level: "error" });
-    return;
-  }
-  if (!there.some(s => s.active)) {
-    const byAddress = new Map(terminals().map(term => [term.address, term]));
-    const tabByTerminal = new Map(panes().map(p => [p.terminal, p.tab]));
-    const seen = new Set([address]);
-    let parent = byAddress.get(address)?.parent;
-    let target;
-    while (parent && !seen.has(parent) && !target) {
-      seen.add(parent);
-      const tab = tabByTerminal.get(parent);
-      target = there.find(s => s.tabs.some(t => t.id === tab));
-      parent = byAddress.get(parent)?.parent;
-    }
-    run("space.select", { id: (target ?? there[0]).id });
-  }
-  run("terminal.keep", { terminal: address, place: "tab" });
-}
-
-// A peek does not clear the core's Done report. Remember the viewed turn
-// across both panels and let the next turn display Done again.
-function viewedTerminalStatuses(all, shown) {
-  const key = "sidebar.viewedTerminalTurns";
-  const viewed = shared(key) ?? {};
-  const turnOf = term => term.turn ?? term.status_ms;
-  const current = all.find(term => term.address === shown && term.state === "live" && term.status === "done");
-  const turn = current && turnOf(current);
-  if (turn != null && viewed[shown] !== turn && !checking()) {
-    const seen = Object.fromEntries(all.filter(term => term.state === "live" && term.status === "done" &&
-      turnOf(term) != null && viewed[term.address] === turnOf(term)).map(term => [term.address, turnOf(term)]));
-    setShared(key, { ...seen, [shown]: turn });
-  }
-  return all.map(term => term.state === "live" && term.status === "done" &&
-    (term === current || (turnOf(term) != null && viewed[term.address] === turnOf(term)))
-    ? { ...term, status: "idle" } : term);
-}
+const where = (s, ps) => gitKey(s.machine, place(s, ps));
 
 function terminalGroups(sp, ps, all) {
   const spaceOfTab = new Map(sp.flatMap(s => (s.tabs ?? []).map(tab => [tab.id, s.id])));
@@ -157,28 +65,11 @@ function terminalGroups(sp, ps, all) {
       parent = byAddress.get(parent)?.parent;
     }
     const groups = space ? bySpace : byMachine;
-    const key = space ?? machineOfTerminal(term.address);
+    const key = space ?? machineOf(term.address);
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(term);
   }
   return { bySpace, byMachine };
-}
-
-function machineOfTerminal(address) {
-  const slash = address.indexOf("/");
-  return slash < 0 ? null : address.slice(0, slash);
-}
-
-// Rows in both sidebars use 26px cells with 1px margins. Extend each
-// vertical stroke into those margins so adjacent rows meet.
-function treeLines(lines, t) {
-  const color = t.dim;
-  return lines.map(line => div().relative().w(9).h(26).mr(TREE_COLUMN_WIDTH - 9).flex_none()
-    .when(Boolean(line), el => el.child(div().absolute().left(0).top(-1).w_full()
-      .border_l(TREE_STROKE_WIDTH).border_color(color)
-      .when(line === "└", stroke => stroke.h(15).border_b(TREE_STROKE_WIDTH).rounded_bl(5))
-      .when(line !== "└", stroke => stroke.bottom(-1))))
-    .when(line === "├", el => el.child(div().absolute().left(TREE_STROKE_WIDTH).right(0).top(12.5).h(TREE_STROKE_WIDTH).bg(color))));
 }
 
 function terminalTree(terms) {
@@ -204,271 +95,9 @@ function terminalTree(terms) {
   return rows;
 }
 
-// --- shared git cache: keep this block identical in both sidebar mods ---
-// Spaces and Agents share their answers for places they both show. A place is
-// (machine, live folder), so two machines' /repo never mix. A look can walk the
-// worktree for changed files or read only refs, which is cheaper. Unused entries
-// expire and the store stays bounded.
-const GIT_CACHE = "sidebar.git.v1";
-const GIT_REFS_EVERY = 30000; // how stale branch, upstream and ahead/behind may get
-const GIT_DIRTY_EVERY = 60000; // how stale the worktree's changed files may get
-const GIT_STALE = 900000; // a place not looked at for a quarter of an hour is dropped
-const GIT_MAX = 64; // places kept in shared state
-const GIT_TIMEOUT = 20000; // one look at a place, then ask again later
-
-// Runs finished, not returned as they finish: a look is not over while one of
-// its runs still holds an exec slot, and a failure waits for its peers.
-async function allSettledValues(...runs) {
-  const done = await Promise.allSettled(runs);
-  const failed = done.find((d) => d.status === "rejected");
-  if (failed) throw failed.reason;
-  return done.map((d) => d.value);
-}
-
-// The store as read: a damaged or absent value is an empty one.
-function readGitStore() {
-  const places = shared(GIT_CACHE)?.places;
-  return places && typeof places === "object" && !Array.isArray(places) ? places : {};
-}
-
-// One place's record, if it is one this panel can use: another copy's damaged
-// write is not this panel's answer.
-function gitRecordOf(r) {
-  if (!r || typeof r !== "object" || !Number.isFinite(r.at) || r.at <= 0) return null;
-  if (Date.now() - r.at > GIT_STALE) return null;
-  let info = r.info;
-  if (info !== null) {
-    const g = info;
-    if (!g || typeof g !== "object" || Array.isArray(g) || typeof g.name !== "string"
-      || (g.branch !== null && typeof g.branch !== "string")
-      || (g.upstream !== null && typeof g.upstream !== "string")
-      || !["ahead", "behind", "dirty", "conflicts"].every(k => Number.isFinite(g[k]) && g[k] >= 0)) return null;
-    try {
-      const repo = JSON.parse(g.repo);
-      if (!Array.isArray(repo) || repo.length !== 2 || (repo[0] !== null && typeof repo[0] !== "string") || typeof repo[1] !== "string") return null;
-      if (g.name === ".bare" && repo[1].endsWith("/.bare")) info = { ...g, name: gitRepoName(repo[1]) };
-    } catch { return null; }
-  }
-  return {
-    at: r.at,
-    refsAt: Number.isFinite(r.refsAt) ? r.refsAt : 0,
-    dirtyAt: Number.isFinite(r.dirtyAt) ? r.dirtyAt : 0,
-    info: info ?? null,
-    unsure: r.unsure === true,
-  };
-}
-
-function latestGitRecord(key, local) {
-  const peer = gitRecordOf(readGitStore()[key]);
-  return peer && peer.at > (local?.at ?? 0) ? peer : local;
-}
-
-// Publish a pool's answers together, keeping anything newer that arrived while
-// it ran. Places nobody looked at for a while go.
-function writeGitStore(results) {
-  if (checking() || !results.size) return;
-  const places = { ...readGitStore() };
-  let changed = false;
-  for (const [key, record] of results) {
-    if ((gitRecordOf(places[key])?.at ?? 0) > record.at) continue;
-    places[key] = record;
-    changed = true;
-  }
-  if (!changed) return;
-  const now = Date.now();
-  const kept = {};
-  for (const [k, r] of Object.entries(places)) {
-    if (!r || typeof r !== "object" || !Number.isFinite(r.at) || now - r.at > GIT_STALE) continue;
-    kept[k] = r;
-  }
-  const newest = Object.entries(kept).sort((a, b) => b[1].at - a[1].at).slice(0, GIT_MAX);
-  setShared(GIT_CACHE, { places: Object.fromEntries(newest) });
-}
-
-// The repo's own name: its .git folder names it, and a worktree's top differs.
-function gitRepoName(repo) {
-  const last = (path) => path.replace(/\/+$/, "").split("/").pop();
-  if (repo.endsWith("/.git")) return last(repo.slice(0, -5));
-  if (repo.endsWith("/.bare")) return last(repo.slice(0, -6)) || ".bare";
-  return last(repo).replace(/\.git$/, "");
-}
-
-// A `status --porcelain=v2 --branch` answer: branch, upstream, ahead/behind and
-// the worktree's work — `1`/`2` changed or renamed, `?` untracked, `u` a conflict.
-function gitBranchInfo(stdout) {
-  const info = { branch: null, upstream: null, ahead: 0, behind: 0, dirty: 0, conflicts: 0 };
-  for (const line of stdout.split("\n")) {
-    if (line.startsWith("# branch.head ")) info.branch = line.slice(14);
-    else if (line.startsWith("# branch.upstream ")) info.upstream = line.slice(18);
-    else if (line.startsWith("# branch.ab ")) {
-      const [a, b] = line.slice(12).split(" ");
-      info.ahead = Math.abs(parseInt(a, 10)) || 0;
-      info.behind = Math.abs(parseInt(b, 10)) || 0;
-    } else if (line.startsWith("u ")) { info.dirty++; info.conflicts++; }
-    else if (/^[12?] /.test(line)) info.dirty++;
-  }
-  if (info.branch === "(detached)") info.branch = null;
-  return info;
-}
-
-// What Git answers when there is nothing unusual to report: a detached or unborn
-// HEAD, a branch without an upstream. Anything else (ssh, a folder gone) is a
-// look Git did not make, and the panel keeps what it showed.
-const GIT_NO_REF = /not a symbolic ref|does not point to a branch|not a git repository/i;
-const GIT_NO_UPSTREAM = /no upstream configured|no such branch|does not point to a branch|ambiguous argument|unknown revision|not a git repository/i;
-const gitNoRepo = (r) => r.code !== 0 && /not a git repository/i.test(r.stderr ?? "");
-const gitUnanswered = (r, quiet) => r.code !== 0 && !quiet.test(r.stderr ?? "")
-  && !(quiet === GIT_NO_REF && r.code === 1 && !(r.stderr ?? "").trim());
-
-// One place's git answer. `prev` is the record this panel already has; `walk`
-// asks for the worktree's changed files too, `force` reads the refs even when
-// they were read a moment ago (a folder watch or live branch change).
-async function checkGit(key, place, prev, { walk = false, force = false, since = 0, results } = {}) {
-  prev = latestGitRecord(key, prev);
-  const full = walk || !prev?.info?.repo;
-  // Another panel's answer can stand in for this request if it read what we need
-  // after the request was made. A forced request may share a millisecond with
-  // an older read, so give the event priority in a tie.
-  const stamp = full ? prev?.dirtyAt : prev?.refsAt;
-  if (since && (stamp > since || (!force && stamp === since))) return prev;
-  const answer = await lookGit(place, prev, full);
-  // A fast refresh of the same place must still be adoptable by the other mod.
-  const record = { ...answer, at: Math.max(Date.now(), (prev?.at ?? 0) + 1) };
-  results?.set(key, record);
-  return record;
-}
-
-async function lookGit(place, prev, full) {
-  const on = place.on ?? null;
-  const opts = { cwd: place.cwd, on, timeout: GIT_TIMEOUT };
-  const info = prev?.info ?? null;
-  const refsAt = prev?.refsAt ?? 0;
-  const dirtyAt = prev?.dirtyAt ?? 0;
-  const now = Date.now();
-  const unsure = { refsAt, dirtyAt, info, unsure: true };
-  const missing = { refsAt: now, dirtyAt: now, info: null, unsure: false };
-  try {
-    if (!full) {
-      // A checkout, a commit or a fetch shows here without walking this
-      // repository's worktree.
-      const [ref, up] = await allSettledValues(
-        exec("git", ["symbolic-ref", "-q", "HEAD"], opts),
-        exec("git", ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], opts),
-      );
-      if (gitUnanswered(ref, GIT_NO_REF) || gitUnanswered(up, GIT_NO_UPSTREAM)) {
-        return unsure;
-      }
-      if (gitNoRepo(ref) || gitNoRepo(up)) return missing;
-      // `HEAD...@{upstream}` counts ahead then behind; no upstream has nothing to count.
-      const counts = up.code === 0
-        ? await exec("git", ["rev-list", "--left-right", "--count", "HEAD...@{upstream}"], opts)
-        : null;
-      if (counts && gitUnanswered(counts, GIT_NO_UPSTREAM)) return unsure;
-      const branch = ref.code === 0 ? ref.stdout.trim().replace(/^refs\/heads\//, "") : "";
-      const upstream = up.code === 0 ? up.stdout.trim() || null : null;
-      const [ahead, behind] = counts?.code === 0
-        ? counts.stdout.trim().split(/\s+/).map((n) => Math.abs(parseInt(n, 10)) || 0)
-        : [0, 0];
-      return { refsAt: now, dirtyAt, unsure: false, info: { ...info, branch: branch || null, upstream, ahead, behind } };
-    }
-    let repoInfo = info;
-    if (!repoInfo?.repo) {
-      // A folder name may contain a newline, so ask for each path on its own.
-      const [top, common] = await allSettledValues(
-        exec("git", ["rev-parse", "--path-format=absolute", "--show-toplevel"], opts),
-        exec("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], opts),
-      );
-      if (gitNoRepo(top) || gitNoRepo(common)) return missing;
-      // Strip only Git's final newline: a folder name may contain whitespace.
-      const tree = top.stdout.replace(/\n$/, "");
-      const repo = common.stdout.replace(/\n$/, "");
-      if (top.code !== 0 || common.code !== 0 || !tree || !repo) return unsure;
-      repoInfo = { name: gitRepoName(repo), repo: JSON.stringify([on, repo]), linked: repo !== `${tree}/.git` };
-    }
-    // Avoid locks and fsmonitor cookies that would wake the repository watch.
-    const status = await exec("git", ["--no-optional-locks", "-c", "core.fsmonitor=false", "status", "--porcelain=v2", "--branch"], opts);
-    if (gitNoRepo(status)) return missing;
-    if (status.code !== 0) return unsure;
-    return { refsAt: now, dirtyAt: now, unsure: false, info: { ...repoInfo, ...gitBranchInfo(status.stdout) } };
-  } catch {
-    // Couldn't ask (the machine is away): keep what it showed, look again later.
-    return unsure;
-  }
-}
-// --- end shared git cache ---
-
-// A space, tab, pane or terminal id without its machine prefix: a process on
-// that machine names its own terminal the bare way.
-const bare = (id) => id.slice(id.lastIndexOf("/") + 1);
-// A listening socket's port, from `127.0.0.1:3000` or `[::1]:3000`.
-const portOf = (address) => {
-  const n = Number(address.slice(address.lastIndexOf(":") + 1));
-  return Number.isInteger(n) && n > 0 && n < 65536 ? n : null;
-};
-// The host a machine answers to, taken from its ssh target (`jwu@192.168.3.81`,
-// `[::1]`, or either with a port): a copied port names that host, not the
-// window's `localhost`.
-const hostOf = (target) => {
-  if (!target) return null;
-  let s = String(target).trim();
-  const at = s.lastIndexOf("@");
-  if (at >= 0) s = s.slice(at + 1);
-  if (s.startsWith("[")) {
-    const end = s.indexOf("]");
-    if (end > 0) return s.slice(1, end);
-  }
-  const colon = s.indexOf(":");
-  return colon > 0 ? s.slice(0, colon) : s;
-};
 // Bound the work across machines; a slow repository must not hold up the list.
 const AT_ONCE = 6;
 
-// The Local header's coffee cup: `caffeinate` holds the power assertion, as
-// Sheprd's status-bar cup holds one through `keepawake`. The pid lives in a
-// file in the app folder, so a reloaded mod takes the same hold back instead of
-// starting a second cup; `-w` ties the hold to the window's process, so
-// quitting Herdr lets go. Only macOS has `caffeinate`.
-const CUP_PID = "sidebar-spaces.caffeine.pid";
-// A cup nobody clicked off: checked this often, so one killed by hand shows off.
-const CUP_VERIFY = 5000;
-const shellQuote = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
-// Start the hold: `-d -i` like Sheprd (display and idle, no lid override), then
-// the pid of the window, found up the process tree past herdr-core helpers.
-const CUP_START = (file) => [
-  `f=${shellQuote(file)}`,
-  'mkdir -p "$(dirname "$f")"',
-  'p=$$',
-  'while [ "$p" -gt 1 ]; do',
-  '  c=$(ps -o comm= -p "$p" 2>/dev/null)',
-  '  case "$c" in',
-  '    */herdr-core|*/hc|herdr-core|hc) ;;',
-  '    *Herdr*|*herdr-app*) break ;;',
-  '  esac',
-  '  p=$(ps -o ppid= -p "$p" 2>/dev/null | tr -d " ")',
-  '  p=${p:-1}',
-  'done',
-  'if [ "$p" -gt 1 ]; then',
-  '  caffeinate -d -i -w "$p" </dev/null >/dev/null 2>&1 &',
-  'else',
-  '  caffeinate -d -i </dev/null >/dev/null 2>&1 &',
-  'fi',
-  'echo $! > "$f"',
-].join("\n");
-const CUP_STOP = (file, pid) => [
-  `f=${shellQuote(file)}`,
-  'p=$(cat "$f" 2>/dev/null)',
-  `[ -n "$p" ] || p=${Number.isInteger(pid) ? pid : ""}`,
-  '[ -n "$p" ] && kill "$p" 2>/dev/null',
-  'rm -f "$f"',
-  'exit 0',
-].join("\n");
-// A pid that is still the `caffeinate` this mod started, not a reused one.
-const CUP_ALIVE = (pid) => `kill -0 ${pid} 2>/dev/null && ps -o comm= -p ${pid} 2>/dev/null`;
-
-// The second line under a machine's name: CPU and memory, read from that
-// machine's own shell. Linux counters are compared with the previous reading;
-// macOS has no such counters a shell can read, so `ps` sums what is running.
-// A machine without a POSIX shell (Windows) keeps the placeholders.
 const SAMPLE_EVERY = 5000;
 const CPU_WARN = 75;
 const MEM_WARN = 80;
@@ -478,76 +107,6 @@ const BAR_W = 3;
 const BAR_GAP = 1;
 const GRAPH_H = 14;
 const METER_W = 36;
-const STAT_SCRIPT = [
-  "printf '[stats]\\n'",
-  '(',
-  'os=$(uname -s 2>/dev/null) || exit 1',
-  'echo "os $os"',
-  'case "$os" in',
-  '  Linux|MINGW*|MSYS*|CYGWIN*)',
-  '    echo "cores $(getconf _NPROCESSORS_ONLN 2>/dev/null)"',
-  '    head -n 1 /proc/stat',
-  "    grep -E '^(MemTotal|MemAvailable|MemFree):' /proc/meminfo",
-  '    ;;',
-  '  Darwin)',
-  '    echo "cores $(sysctl -n hw.ncpu 2>/dev/null)"',
-  '    echo "memsize $(sysctl -n hw.memsize 2>/dev/null)"',
-  '    vm_stat',
-  '    ps -A -o %cpu=',
-  '    ;;',
-  'esac',
-  ") && printf '[/stats]\\n'",
-].join("\n");
-const clamp = (v) => Math.min(100, Math.max(0, v));
-
-// The ports a space's servers listen on, read the way Sheprd reads its sidebar:
-// a listener proves where it was started by the terminal it inherited, never by
-// a process tree or a working folder. herdr-core exports HC_TERMINAL_ID into
-// every terminal it opens and Herdr exports HERDR_WORKSPACE_ID into every pane
-// it starts; a listener with neither (a system service, a container, anything
-// started outside Herdr) belongs to no space and is dropped. `L` is one
-// listening socket, `O` one owner a listener named.
-const PORT_SCRIPT = [
-  "printf '[ports]\\n'",
-  '(',
-  'for herdr_dir in /usr/sbin /sbin; do',
-  '  case ":$PATH:" in',
-  '    *":$herdr_dir:"*) ;;',
-  '    *) PATH="$PATH:$herdr_dir" ;;',
-  '  esac',
-  'done',
-  'if command -v ss >/dev/null 2>&1; then',
-  "  herdr_ports=$(ss -ltnp 2>/dev/null | awk '{",
-  '    rest = $0',
-  '    while (match(rest, /\\("[^"]*",pid=[0-9]+/)) {',
-  '      entry = substr(rest, RSTART + 2, RLENGTH - 2)',
-  '      rest = substr(rest, RSTART + RLENGTH)',
-  '      split(entry, part, "\\",pid=")',
-  '      print "L", part[2], $4',
-  '    }',
-  "  }')",
-  'elif command -v lsof >/dev/null 2>&1; then',
-  `  herdr_ports=$(lsof -nP -a -u "$(id -u)" -iTCP -sTCP:LISTEN -Fpcn 2>/dev/null | awk '`,
-  '    /^p/ { pid = substr($0, 2) }',
-  "    /^n/ { print \"L\", pid, substr($0, 2) }')",
-  'else',
-  '  herdr_ports=N',
-  'fi',
-  "printf '%s\\n' \"$herdr_ports\"",
-  "for herdr_pid in $(printf '%s\\n' \"$herdr_ports\" | awk '$1 == \"L\" { print $2 }' | sort -un | head -n 128); do",
-  '  if [ -r "/proc/$herdr_pid/environ" ]; then',
-  "    herdr_env=$(tr '\\0' '\\n' < \"/proc/$herdr_pid/environ\")",
-  '  else',
-  "    herdr_env=$(ps -E -ww -o command= -p \"$herdr_pid\" 2>/dev/null | tr ' ' '\\n')",
-  '  fi',
-  '  for herdr_key in HERDR_WORKSPACE_ID HC_TERMINAL_ID; do',
-  "    herdr_val=$(printf '%s\\n' \"$herdr_env\" | sed -n \"s/^$herdr_key=//p\" | head -n 1)",
-  '    [ -n "$herdr_val" ] && printf \'O %s %s %s\\n\' "$herdr_pid" "$herdr_key" "$herdr_val"',
-  '  done',
-  'done',
-  'true',
-  ") && printf '[/ports]\\n'",
-].join("\n");
 
 // A space speaks up only when something in it needs you.
 export function glyph(status) {
@@ -556,16 +115,6 @@ export function glyph(status) {
 
 export function tone(t, status) {
   return t[status] ?? t.unknown;
-}
-
-// A space's state, drawn as the agents list draws an agent's: a spinner while
-// working, a badge when blocked, a ring when idle, a dot when done.
-export function mark(status, t) {
-  if (status === "working") return svg("mods/workspace-chrome/spinner.svg").size(12).mx(1).flex_none().text_color(t.working).spin(900);
-  if (status === "blocked") return div().size(14).flex_none().rounded(4).bg(t.blocked + "26").text_size(10.5).font_bold().text_color(t.blocked).flex().items_center().justify_center().child("!");
-  if (status === "idle") return div().size(7).mx(3).flex_none().rounded(4).border(1.5).border_color(t.idle ?? t.dim);
-  if (status === "done") return div().size(7).mx(3).flex_none().rounded(4).bg(t.done);
-  return null;
 }
 
 export default class Spaces extends View {
@@ -661,7 +210,7 @@ export default class Spaces extends View {
     cx.timer.every(15000, cx => { if (shown()) this.refreshMachines(cx); });
     // The Local header's cup is available wherever `caffeinate` exists.
     cx.spawn(async (cx) => {
-      try { this.cupHere = (await exec("sh", ["-c", "command -v caffeinate"])).code === 0; } catch {}
+      this.cupHere = await hasCaffeinate();
       if (this.cupHere) await this.syncCup(cx);
       cx.notify();
     });
@@ -791,7 +340,7 @@ export default class Spaces extends View {
         const counts = new Map();
         for (const term of JSON.parse(result.stdout).terminals) {
           if (term.state !== "finished") continue;
-          const machine = machineOfTerminal(term.address);
+          const machine = machineOf(term.address);
           counts.set(machine, (counts.get(machine) ?? 0) + 1);
         }
         this.finishedCounts = counts;
@@ -807,8 +356,7 @@ export default class Spaces extends View {
   refreshSample(cx) {
     const usage = enabled(SHOW_USAGE), ports = enabled(SHOW_PORTS);
     if (!usage && !ports) return;
-    // Each section closes only on success. The shell can finish either one.
-    const script = [usage ? STAT_SCRIPT : "", ports ? PORT_SCRIPT : "", ":"].join("\n");
+    const script = sampleScript(usage, ports);
     const now = Date.now();
     for (const m of [null, ...this.machines.filter(k => k.state === "connected").map(k => k.name)]) {
       const key = m ?? "";
@@ -819,10 +367,7 @@ export default class Spaces extends View {
         let stats, listeners;
         try {
           const r = await exec("sh", ["-c", script], { on: m, timeout: 15000 });
-          if (r.code === 0) {
-            if (usage) stats = /^\[stats\]\n([\s\S]*?)^\[\/stats\]$/m.exec(r.stdout)?.[1];
-            if (ports) listeners = /^\[ports\]\n([\s\S]*?)^\[\/ports\]$/m.exec(r.stdout)?.[1];
-          }
+          if (r.code === 0) ({ stats, listeners } = sampleSections(r.stdout, usage, ports));
         } catch {} finally {
           this.sampling.delete(key);
         }
@@ -834,102 +379,13 @@ export default class Spaces extends View {
     }
   }
 
-  // One machine's answer: its listening sockets, each put in the space whose
-  // terminal its process named.
   takePorts(key, out) {
-    const listeners = [];
-    const owners = new Map();
-    for (const line of out.split("\n")) {
-      const f = line.trim().split(" ");
-      if (f[0] === "L") {
-        const number = portOf(f[2] ?? "");
-        if (f[1] && number) listeners.push({ pid: f[1], number, address: f[2] });
-      } else if (f[0] === "O" && f[1] && f[3]) {
-        const owner = owners.get(f[1]) ?? {};
-        owner[f[2] === "HERDR_WORKSPACE_ID" ? "workspace" : "terminal"] = f[3];
-        owners.set(f[1], owner);
-      }
-    }
-    const machine = key || null;
-    const sp = spaces();
-    const tabSpace = new Map();
-    for (const s of sp) {
-      if ((s.machine ?? null) !== machine) continue;
-      for (const tab of s.tabs ?? []) tabSpace.set(tab.id, s.id);
-    }
-    // A pane id carries its machine's prefix; the process names only the bare
-    // terminal, so both spellings lead to the space.
-    const terminalSpace = new Map();
-    for (const p of panes()) {
-      const space = tabSpace.get(p.tab);
-      if (!space || !p.terminal) continue;
-      terminalSpace.set(p.terminal, space);
-      terminalSpace.set(bare(p.terminal), space);
-    }
-    const spaceOf = (owner) => {
-      if (!owner) return null;
-      if (owner.terminal) {
-        const space = terminalSpace.get(owner.terminal) ?? terminalSpace.get(bare(owner.terminal));
-        if (space) return space;
-      }
-      if (owner.workspace) {
-        const want = bare(owner.workspace);
-        const space = sp.find(s => (s.machine ?? null) === machine && bare(s.id) === want);
-        if (space) return space.id;
-      }
-      return null;
-    };
-    const found = {};
-    for (const listener of listeners) {
-      const space = spaceOf(owners.get(listener.pid));
-      if (!space) continue;
-      const list = found[space] ??= [];
-      if (list.length >= 32 || list.some(p => p.number === listener.number)) continue;
-      list.push({ number: listener.number, address: listener.address });
-    }
-    for (const list of Object.values(found)) list.sort((a, b) => a.number - b.number);
-    this.ports[key] = found;
+    this.ports[key] = parsePorts(out, key || null, spaces(), panes());
   }
 
-  // One machine's answer: `os`, cores, memory, CPU counters (Linux) or a
-  // moment of `ps` (macOS).
   takeStats(key, out) {
-    const lines = out.split("\n").map(l => l.trim()).filter(Boolean);
-    const os = lines[0]?.startsWith("os ") ? lines[0].slice(3) : "";
-    const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
-    const field = (name) => num(lines.find(l => l.startsWith(name + " "))?.slice(name.length + 1));
-    let cpu = null, mem = null, cores = field("cores");
-    if (/^(Linux|MINGW|MSYS|CYGWIN)/.test(os)) {
-      const stat = lines.find(l => l.startsWith("cpu "));
-      const f = stat ? stat.split(/\s+/).slice(1).map(Number) : [];
-      if (f.length >= 4 && f.every(Number.isFinite)) {
-        const total = f.reduce((a, b) => a + b, 0);
-        const idle = f[3] + (f[4] ?? 0);
-        const prev = this.ticks[key];
-        if (prev && total > prev.total) cpu = clamp((1 - (idle - prev.idle) / (total - prev.total)) * 100);
-        this.ticks[key] = { total, idle };
-      }
-      const kb = (name) => {
-        const l = lines.find(x => x.startsWith(name + ":"));
-        const v = l ? num(l.slice(name.length + 1).replace(/[^\d.]/g, "")) : null;
-        return v == null ? null : v * 1024;
-      };
-      const total = kb("MemTotal"), free = kb("MemAvailable") ?? kb("MemFree");
-      if (total && free != null) mem = clamp((total - free) / total * 100);
-    } else if (os === "Darwin") {
-      const page = num(/page size of (\d+) bytes/.exec(out)?.[1]) ?? 4096;
-      const pages = (name) => {
-        const l = lines.find(x => x.startsWith(name + ":"));
-        return l ? num(l.slice(name.length + 1).replace(/[^\d.]/g, "")) : null;
-      };
-      const used = ["Pages active", "Pages speculative", "Pages wired down", "Pages occupied by compressor"]
-        .reduce((a, name) => a + (pages(name) ?? 0), 0);
-      const total = field("memsize");
-      if (total) mem = clamp(used * page / total * 100);
-      // `ps` prints one percentage per process, of one core each.
-      const sum = lines.filter(l => /^\d+(\.\d+)?$/.test(l)).reduce((a, v) => a + Number(v), 0);
-      if (cores && sum > 0) cpu = clamp(sum / cores);
-    }
+    const { cpu, mem, cores, ticks } = parseStats(out, this.ticks[key]);
+    if (ticks) this.ticks[key] = ticks;
     if (cpu != null) {
       const hist = (this.history[key] ??= []);
       hist.push(cpu);
@@ -940,23 +396,14 @@ export default class Spaces extends View {
 
   // --- the Local machine's coffee cup -------------------------------------
 
-  async cupPidAlive(pid) {
-    if (!Number.isInteger(pid) || pid <= 0) return false;
-    try {
-      const r = await exec("sh", ["-c", CUP_ALIVE(pid)]);
-      return r.code === 0 && /caffeinate/.test(r.stdout);
-    } catch { return false; }
-  }
-
   // The cup as it is now: the hold named by the pid file if it still runs, else
   // off. A reloaded mod, or a cup killed elsewhere, comes back right here.
   async syncCup(cx) {
-    let pid = null;
-    try { pid = Number((await fs.readFile(this.cupFile, "utf8")).trim()); } catch {}
-    const held = await this.cupPidAlive(pid);
+    const pid = await readCupPid(this.cupFile);
+    const held = await cupPidAlive(pid);
     this.cupPid = held ? pid : null;
     this.cup = held ? "on" : "off";
-    if (!held) await fs.unlink(this.cupFile).catch(() => {});
+    if (!held) await removeCupPid(this.cupFile);
     cx.notify();
   }
 
@@ -966,9 +413,7 @@ export default class Spaces extends View {
     this.cup = "busy";
     cx.notify();
     cx.spawn(async (cx) => {
-      try {
-        await exec("sh", ["-c", held ? CUP_STOP(this.cupFile, this.cupPid) : CUP_START(this.cupFile)]);
-      } catch {}
+      await changeCupHold(this.cupFile, this.cupPid, held);
       await this.syncCup(cx);
     });
   }
@@ -978,7 +423,7 @@ export default class Spaces extends View {
   verifyCup(cx) {
     if (this.cup !== "on" || !this.cupPid) return;
     cx.spawn(async (cx) => {
-      if (await this.cupPidAlive(this.cupPid)) return;
+      if (await cupPidAlive(this.cupPid)) return;
       await this.syncCup(cx);
     });
   }
@@ -991,7 +436,7 @@ export default class Spaces extends View {
     const key = m ?? "";
     const s = live ? (this.stats[key] ?? {}) : {};
     const hist = live ? this.history[key] ?? [] : [];
-    const width = find(layout(), "sidebar")?.size?.px ?? Infinity;
+    const width = sidebarPx();
     const graphs = width >= 260 ? "full" : width >= 200 ? "gauge" : "none";
     // Numbers only, and not much room for them: tuck the line in under the icon.
     const tight = graphs === "none";
@@ -1042,7 +487,7 @@ export default class Spaces extends View {
         if (machine && !peers.some(peer => peer.name === machine && peer.state === "connected")) {
           throw new Error("Machine is disconnected");
         }
-        const finished = records.filter(term => term.state === "finished" && machineOfTerminal(term.address) === machine);
+        const finished = records.filter(term => term.state === "finished" && machineOf(term.address) === machine);
         let removed = 0;
         for (const term of finished) {
           try {
@@ -1619,7 +1064,7 @@ export default class Spaces extends View {
   }
 
   row({ w, i, g, tree }, t, terminalCount) {
-    const px = find(layout(), "sidebar")?.size?.px ?? Infinity;
+    const px = sidebarPx();
     const id = `space-${w.id}`;
     const leading = statusAtStart();
     const open = this.terminalsOpen(id);
@@ -1819,60 +1264,10 @@ export default class Spaces extends View {
         .text_color(tone(t, w.status)).child(glyph(w.status))));
   }
 
-  settingsDialog(t) {
-    const row = label => h_flex().h(34).px(11).gap(12).flex_none().items_center()
-      .child(div().flex_1().min_w(0).truncate().child(label));
-    const section = (title, rows) => v_flex().gap(5).flex_none()
-      .child(div().px(2).text_size(12).font_semibold().text_color(t.muted).child(title))
-      .child(v_flex().py(3).rounded(8).border_1().border_color(t.border).bg(t.surface).children(rows));
-    const toggle = (label, key) => {
-      const on = enabled(key);
-      return row(label).id(`setting-${key}`).rounded(6).cursor_pointer()
-        .hover(s => s.bg(t.hover)).on_click(() => setShared(key, !enabled(key)))
-        .child(div().w(32).h(18).p(2).flex_none().flex().items_center().rounded_full()
-          .bg(on ? t.accent : t.input)
-          .when(on, el => el.justify_end()).when(!on, el => el.justify_start())
-          .child(div().size(14).flex_none().rounded_full().bg(on ? t.accent_foreground : t.muted)));
-    };
-    const choices = (label, key, options, fallback = options[0][0]) => {
-      const selected = options.find(([id]) => id === shared(key))?.[0] ?? fallback;
-      return row(label).child(h_flex().p(2).gap(2).rounded(6).bg(t.input).flex_none()
-        .children(options.map(([id, text]) => div().id(`setting-${key}-${id}`).px(8).h(24).rounded(4)
-          .flex().items_center().cursor_pointer().text_size(12).text_color(id === selected ? t.foreground : t.muted)
-          .when(id === selected, el => el.bg(t.raised).font_semibold())
-          .when(id !== selected, el => el.hover(s => s.bg(t.hover).text_color(t.foreground)))
-          .on_click(() => setShared(key, id)).child(text))));
-    };
-    return v_flex().size_full().min_h(0).bg(t.popover).text_size(13).text_color(t.foreground)
-      .child(h_flex().h(53).flex_none().px(18).items_center().border_b(1).border_color(t.border)
-        .child(div().text_size(17).font_semibold().child("Sidebar Settings")))
-      .child(v_flex().id("sidebar-settings-scroll").flex_1().min_h(0).px(18).py(12).gap(12)
-        .overflow_y_scrollbar().mode("hover")
-        .child(section("General", [
-          choices("Status icon position", STATUS_POSITION_KEY, [["start", "Left"], ["end", "Right"]], "end"),
-          toggle("Git branch and remote", SHOW_GIT_BRANCH),
-          toggle("Git changes and conflicts", SHOW_GIT_CHANGES),
-          toggle("Git ahead and behind counts", SHOW_GIT_SYNC),
-        ]))
-        .child(section("Spaces", [
-          toggle("Machine CPU and memory", SHOW_USAGE),
-          toggle("Listening ports", SHOW_PORTS),
-          toggle("Expand child terminals by default", EXPAND_TERMINALS),
-          toggle("Show keep-awake button", SHOW_CUP).tooltip("The button stays visible while this Mac is being kept awake."),
-        ]))
-        .child(section("Agents", [
-          choices("Sort agents", "agents.sort", [["priority", "Priority"], ["grouped", "Grouped by space"]]),
-          toggle("Expand child agents by default", "sidebar.agents.expandChildren"),
-        ])))
-      .child(h_flex().h(48).flex_none().px(18).items_center().justify_end().border_t(1).border_color(t.border)
-        .child(div().id("settings-done").px(12).h(28).flex().items_center().rounded(6).cursor_pointer()
-          .bg(t.accent).text_color(t.accent_foreground).font_semibold().hover(s => s.opacity(0.9))
-          .on_click(() => closeOverlay(props().overlay)).child("Done")));
-  }
-
   render() {
     const t = theme();
-    if (props()?.sidebarSettings) return this.settingsDialog(t);
+    const view = props();
+    if (view?.sidebarSettings) return settingsDialog(t, view.overlay);
     const collapsed = narrow();
     const palette = ["ansi6", "ansi3", "ansi4", "ansi5", "ansi2", "ansi1"];
     const sp = spaces();
@@ -1901,10 +1296,7 @@ export default class Spaces extends View {
         .when(collapsed, el => el.pl(0).pr(0).justify_center())
         .when(!collapsed, el => el.child("Spaces"))
         .child(h_flex().items_center()
-          .when(!collapsed, el => el.child(div().id("sidebar-settings").size(26).flex_none().flex().items_center().justify_center()
-            .rounded(6).cursor_pointer().hover(s => s.bg(t.hover)).tooltip("Sidebar settings")
-            .on_click(openSettings)
-            .child(svg("mods/workspace-chrome/settings.svg").size(14))))
+          .when(!collapsed, el => el.child(settingsButton(t, openSettings)))
           .child(div().id("space-new").size(26).flex_none().flex().items_center().justify_center().rounded(6).hover(s => s.bg(t.hover))
             .on_click(() => run("space.new")).child(svg("mods/workspace-chrome/plus.svg").size(14)))))
       .child(this.followDrag(v_flex()).flex_1().min_h(0).pb(14).overflow_y_scrollbar().mode("always").track_scroll(this.scroll)

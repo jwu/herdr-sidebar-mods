@@ -3,128 +3,33 @@
 
 import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
-import { agents, terminals, panes, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout, exec, checking, setBadge, notify, nextCommand } from "herdr";
+import { agents, terminals, panes, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout, checking, setBadge, nextCommand } from "herdr";
+import {
+  find, sidebarPx, narrow, shown, GLYPH, SEG_GAP, SCROLL_GUTTER, fit, segmentBudgets,
+  TREE_STROKE_WIDTH, treeLines, machineOf, keepTerminal, viewedTerminalStatuses, mark, statusDot,
+  AGENT_SORT, EXPAND_CHILDREN, SHOW_GIT_BRANCH, SHOW_GIT_CHANGES, SHOW_GIT_SYNC, enabled, statusAtStart,
+  GIT_DIRTY_EVERY, GIT_REFS_EVERY, gitKey, checkGit, readGitStore, gitRecordOf, writeGitStore,
+} from "./shared.js";
+import { settingsButton, settingsDialog } from "./settings.js";
 
-function find(node, id) {
-  if (node?.id === id) return node;
-  for (const child of node?.children ?? []) {
-    const found = find(child, id);
-    if (found) return found;
-  }
-  return null;
-}
+const openSettings = () => openOverlay({ mod: "sidebar-agents", kind: "dialog", width: 510, height: 590, props: { sidebarSettings: true } });
 
-// The sidebar's rail goes by its width, not a flag: dragging its edge narrows it too.
-const sidebarPx = () => find(layout(), "sidebar")?.size?.px ?? Infinity;
-const narrow = () => sidebarPx() < 160;
-// A row shares one line between its machine and its git tail: every segment
-// keeps one glyph, then they grow in turn until the line is full, so neither
-// crowds the other out (sheprd budgets its labels the same way).
-const GLYPH = 8;
-const fit = (text, glyphs) => (text.length <= glyphs ? text : `${text.slice(0, Math.max(0, glyphs - 1))}\u2026`);
-// The tail is cut to its budget and then sized by its own text, so it ends at
-// the row's right edge instead of at the end of a wider measured cell.
-const SEG_GAP = 6;
-// How far the bar's lane reaches in from the right edge (it is 6pt wide, drawn
-// 4.5pt in): rows stop exactly where it starts, so nothing sits under it and
-// nothing leaves a visible gap either.
-const SCROLL_GUTTER = 11;
 const AGENT_PADDING = 8;
 const AGENT_GAP = 8;
 const AGENT_STATUS_WIDTH = 16;
 const AGENT_ICON_WIDTH = 20;
-const statusAtStart = () => shared("sidebar.statusPosition") === "start";
-const TREE_STROKE_WIDTH = 1.5;
-const TREE_COLUMN_WIDTH = 13;
-function segmentBudgets(lengths, available) {
-  const budgets = lengths.map((n) => (n > 0 ? 1 : 0));
-  let left = available - budgets.reduce((a, b) => a + b, 0);
-  while (left > 0) {
-    let grew = false;
-    for (let i = 0; i < budgets.length; i++) {
-      if (budgets[i] > 0 && budgets[i] < lengths[i]) {
-        budgets[i]++;
-        left--;
-        grew = true;
-        if (left === 0) break;
-      }
-    }
-    if (!grew) break;
-  }
-  return budgets;
-}
 
 // To the rail (on macOS wide enough for the traffic lights), or back to the width it had.
 function toggleSidebar() {
-  const width = find(layout(), "sidebar")?.size?.px;
+  const width = find(layout(), node => node.id === "sidebar")?.size?.px;
   if (!narrow()) setShared("sidebar.width", width);
   // Mods edited before the rail went by width still read the flag.
   setShared("sidebar.collapsed", !narrow());
   run("layout.resize", { id: "sidebar", px: narrow() ? (shared("sidebar.width") ?? 268) : window()?.platform === "macos" ? 76 : 44 });
 }
 
-// Whether the platform presents the window (Herdr 0.1.18+). Older Herdr has no
-// flag, so only an explicit false pauses the polls.
-const windowVisible = () => window()?.visible !== false;
-
 // Keep opening brackets, quotes and emoji in real titles. Strip known status marks.
 const clean = (s) => (s ?? "").replace(/^(?:\[ [!.] \] |[✋⏳]\uFE0F?(?=\s)|(?!(?:\p{Emoji}\uFE0F|[#*]\u20E3))[^\p{L}\p{N}\p{Ps}\p{Pi}\p{Emoji_Presentation}])+/u, "").trim();
-
-// Rows in both sidebars use 26px cells with 1px margins. Extend each
-// vertical stroke into those margins so adjacent rows meet.
-function treeLines(lines, t) {
-  const color = t.dim;
-  return lines.map(line => div().relative().w(9).h(26).mr(TREE_COLUMN_WIDTH - 9).flex_none()
-    .when(Boolean(line), el => el.child(div().absolute().left(0).top(-1).w_full()
-      .border_l(TREE_STROKE_WIDTH).border_color(color)
-      .when(line === "└", stroke => stroke.h(15).border_b(TREE_STROKE_WIDTH).rounded_bl(5))
-      .when(line !== "└", stroke => stroke.bottom(-1))))
-    .when(line === "├", el => el.child(div().absolute().left(TREE_STROKE_WIDTH).right(0).top(12.5).h(TREE_STROKE_WIDTH).bg(color))));
-}
-
-// A kept terminal needs a space on its own machine. Match the built-in Peek.
-function keepTerminal(address) {
-  const slash = address.indexOf("/");
-  const machine = slash < 0 ? null : address.slice(0, slash);
-  const there = spaces().filter(s => (s.machine ?? null) === machine);
-  if (!there.length) {
-    notify({ title: "No space on this terminal's machine", level: "error" });
-    return;
-  }
-  if (!there.some(s => s.active)) {
-    const byAddress = new Map(terminals().map(term => [term.address, term]));
-    const tabByTerminal = new Map(panes().map(p => [p.terminal, p.tab]));
-    const seen = new Set([address]);
-    let parent = byAddress.get(address)?.parent;
-    let target;
-    while (parent && !seen.has(parent) && !target) {
-      seen.add(parent);
-      const tab = tabByTerminal.get(parent);
-      target = there.find(s => s.tabs.some(t => t.id === tab));
-      parent = byAddress.get(parent)?.parent;
-    }
-    run("space.select", { id: (target ?? there[0]).id });
-  }
-  run("terminal.keep", { terminal: address, place: "tab" });
-}
-
-// A peek does not clear the core's Done report. Remember the viewed turn
-// across both panels and let the next turn display Done again.
-function viewedTerminalStatuses(all, shown) {
-  const key = "sidebar.viewedTerminalTurns";
-  const viewed = shared(key) ?? {};
-  const turnOf = term => term.turn ?? term.status_ms;
-  const current = all.find(term => term.address === shown && term.state === "live" && term.status === "done");
-  const turn = current && turnOf(current);
-  if (turn != null && viewed[shown] !== turn && !checking()) {
-    const seen = Object.fromEntries(all.filter(term => term.state === "live" && term.status === "done" &&
-      turnOf(term) != null && viewed[term.address] === turnOf(term)).map(term => [term.address, turnOf(term)]));
-    setShared(key, { ...seen, [shown]: turn });
-  }
-  return all.map(term => term.state === "live" && term.status === "done" &&
-    (term === current || (turnOf(term) != null && viewed[term.address] === turnOf(term)))
-    ? { ...term, status: "idle" } : term);
-}
 
 function leadPanes(all) {
   const leads = new Map();
@@ -156,7 +61,7 @@ const SORTS = [
   { id: "priority", label: "Priority", icon: "clock" },
   { id: "grouped", label: "Grouped by space", icon: "layers" },
 ];
-const sortOf = () => SORTS.find((s) => s.id === shared("agents.sort")) ?? SORTS[0];
+const sortOf = () => SORTS.find((s) => s.id === shared(AGENT_SORT)) ?? SORTS[0];
 const SECTION = { 4: "Needs you", 3: "Done", 2: "Working", 1: "Idle" };
 const SECTION_STATUS = { 4: "blocked", 3: "done", 2: "working" };
 
@@ -171,206 +76,11 @@ function duration(ms) {
 // The folder an agent works in, by its last path segment (a Windows path too).
 const base = (path) => (path ?? "").replace(/[\\/]+$/, "").split(/[\\/]/).pop();
 
-// --- shared git cache: keep this block identical in both sidebar mods ---
-// Spaces and Agents share their answers for places they both show. A place is
-// (machine, live folder), so two machines' /repo never mix. A look can walk the
-// worktree for changed files or read only refs, which is cheaper. Unused entries
-// expire and the store stays bounded.
-const GIT_CACHE = "sidebar.git.v1";
-const GIT_REFS_EVERY = 30000; // how stale branch, upstream and ahead/behind may get
-const GIT_DIRTY_EVERY = 60000; // how stale the worktree's changed files may get
-const GIT_STALE = 900000; // a place not looked at for a quarter of an hour is dropped
-const GIT_MAX = 64; // places kept in shared state
-const GIT_TIMEOUT = 20000; // one look at a place, then ask again later
-
-// Runs finished, not returned as they finish: a look is not over while one of
-// its runs still holds an exec slot, and a failure waits for its peers.
-async function allSettledValues(...runs) {
-  const done = await Promise.allSettled(runs);
-  const failed = done.find((d) => d.status === "rejected");
-  if (failed) throw failed.reason;
-  return done.map((d) => d.value);
-}
-
-// The store as read: a damaged or absent value is an empty one.
-function readGitStore() {
-  const places = shared(GIT_CACHE)?.places;
-  return places && typeof places === "object" && !Array.isArray(places) ? places : {};
-}
-
-// One place's record, if it is one this panel can use: another copy's damaged
-// write is not this panel's answer.
-function gitRecordOf(r) {
-  if (!r || typeof r !== "object" || !Number.isFinite(r.at) || r.at <= 0) return null;
-  if (Date.now() - r.at > GIT_STALE) return null;
-  let info = r.info;
-  if (info !== null) {
-    const g = info;
-    if (!g || typeof g !== "object" || Array.isArray(g) || typeof g.name !== "string"
-      || (g.branch !== null && typeof g.branch !== "string")
-      || (g.upstream !== null && typeof g.upstream !== "string")
-      || !["ahead", "behind", "dirty", "conflicts"].every(k => Number.isFinite(g[k]) && g[k] >= 0)) return null;
-    try {
-      const repo = JSON.parse(g.repo);
-      if (!Array.isArray(repo) || repo.length !== 2 || (repo[0] !== null && typeof repo[0] !== "string") || typeof repo[1] !== "string") return null;
-      if (g.name === ".bare" && repo[1].endsWith("/.bare")) info = { ...g, name: gitRepoName(repo[1]) };
-    } catch { return null; }
-  }
-  return {
-    at: r.at,
-    refsAt: Number.isFinite(r.refsAt) ? r.refsAt : 0,
-    dirtyAt: Number.isFinite(r.dirtyAt) ? r.dirtyAt : 0,
-    info: info ?? null,
-    unsure: r.unsure === true,
-  };
-}
-
-function latestGitRecord(key, local) {
-  const peer = gitRecordOf(readGitStore()[key]);
-  return peer && peer.at > (local?.at ?? 0) ? peer : local;
-}
-
-// Publish a pool's answers together, keeping anything newer that arrived while
-// it ran. Places nobody looked at for a while go.
-function writeGitStore(results) {
-  if (checking() || !results.size) return;
-  const places = { ...readGitStore() };
-  let changed = false;
-  for (const [key, record] of results) {
-    if ((gitRecordOf(places[key])?.at ?? 0) > record.at) continue;
-    places[key] = record;
-    changed = true;
-  }
-  if (!changed) return;
-  const now = Date.now();
-  const kept = {};
-  for (const [k, r] of Object.entries(places)) {
-    if (!r || typeof r !== "object" || !Number.isFinite(r.at) || now - r.at > GIT_STALE) continue;
-    kept[k] = r;
-  }
-  const newest = Object.entries(kept).sort((a, b) => b[1].at - a[1].at).slice(0, GIT_MAX);
-  setShared(GIT_CACHE, { places: Object.fromEntries(newest) });
-}
-
-// The repo's own name: its .git folder names it, and a worktree's top differs.
-function gitRepoName(repo) {
-  const last = (path) => path.replace(/\/+$/, "").split("/").pop();
-  if (repo.endsWith("/.git")) return last(repo.slice(0, -5));
-  if (repo.endsWith("/.bare")) return last(repo.slice(0, -6)) || ".bare";
-  return last(repo).replace(/\.git$/, "");
-}
-
-// A `status --porcelain=v2 --branch` answer: branch, upstream, ahead/behind and
-// the worktree's work — `1`/`2` changed or renamed, `?` untracked, `u` a conflict.
-function gitBranchInfo(stdout) {
-  const info = { branch: null, upstream: null, ahead: 0, behind: 0, dirty: 0, conflicts: 0 };
-  for (const line of stdout.split("\n")) {
-    if (line.startsWith("# branch.head ")) info.branch = line.slice(14);
-    else if (line.startsWith("# branch.upstream ")) info.upstream = line.slice(18);
-    else if (line.startsWith("# branch.ab ")) {
-      const [a, b] = line.slice(12).split(" ");
-      info.ahead = Math.abs(parseInt(a, 10)) || 0;
-      info.behind = Math.abs(parseInt(b, 10)) || 0;
-    } else if (line.startsWith("u ")) { info.dirty++; info.conflicts++; }
-    else if (/^[12?] /.test(line)) info.dirty++;
-  }
-  if (info.branch === "(detached)") info.branch = null;
-  return info;
-}
-
-// What Git answers when there is nothing unusual to report: a detached or unborn
-// HEAD, a branch without an upstream. Anything else (ssh, a folder gone) is a
-// look Git did not make, and the panel keeps what it showed.
-const GIT_NO_REF = /not a symbolic ref|does not point to a branch|not a git repository/i;
-const GIT_NO_UPSTREAM = /no upstream configured|no such branch|does not point to a branch|ambiguous argument|unknown revision|not a git repository/i;
-const gitNoRepo = (r) => r.code !== 0 && /not a git repository/i.test(r.stderr ?? "");
-const gitUnanswered = (r, quiet) => r.code !== 0 && !quiet.test(r.stderr ?? "")
-  && !(quiet === GIT_NO_REF && r.code === 1 && !(r.stderr ?? "").trim());
-
-// One place's git answer. `prev` is the record this panel already has; `walk`
-// asks for the worktree's changed files too, `force` reads the refs even when
-// they were read a moment ago (a folder watch or live branch change).
-async function checkGit(key, place, prev, { walk = false, force = false, since = 0, results } = {}) {
-  prev = latestGitRecord(key, prev);
-  const full = walk || !prev?.info?.repo;
-  // Another panel's answer can stand in for this request if it read what we need
-  // after the request was made. A forced request may share a millisecond with
-  // an older read, so give the event priority in a tie.
-  const stamp = full ? prev?.dirtyAt : prev?.refsAt;
-  if (since && (stamp > since || (!force && stamp === since))) return prev;
-  const answer = await lookGit(place, prev, full);
-  // A fast refresh of the same place must still be adoptable by the other mod.
-  const record = { ...answer, at: Math.max(Date.now(), (prev?.at ?? 0) + 1) };
-  results?.set(key, record);
-  return record;
-}
-
-async function lookGit(place, prev, full) {
-  const on = place.on ?? null;
-  const opts = { cwd: place.cwd, on, timeout: GIT_TIMEOUT };
-  const info = prev?.info ?? null;
-  const refsAt = prev?.refsAt ?? 0;
-  const dirtyAt = prev?.dirtyAt ?? 0;
-  const now = Date.now();
-  const unsure = { refsAt, dirtyAt, info, unsure: true };
-  const missing = { refsAt: now, dirtyAt: now, info: null, unsure: false };
-  try {
-    if (!full) {
-      // A checkout, a commit or a fetch shows here without walking this
-      // repository's worktree.
-      const [ref, up] = await allSettledValues(
-        exec("git", ["symbolic-ref", "-q", "HEAD"], opts),
-        exec("git", ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], opts),
-      );
-      if (gitUnanswered(ref, GIT_NO_REF) || gitUnanswered(up, GIT_NO_UPSTREAM)) {
-        return unsure;
-      }
-      if (gitNoRepo(ref) || gitNoRepo(up)) return missing;
-      // `HEAD...@{upstream}` counts ahead then behind; no upstream has nothing to count.
-      const counts = up.code === 0
-        ? await exec("git", ["rev-list", "--left-right", "--count", "HEAD...@{upstream}"], opts)
-        : null;
-      if (counts && gitUnanswered(counts, GIT_NO_UPSTREAM)) return unsure;
-      const branch = ref.code === 0 ? ref.stdout.trim().replace(/^refs\/heads\//, "") : "";
-      const upstream = up.code === 0 ? up.stdout.trim() || null : null;
-      const [ahead, behind] = counts?.code === 0
-        ? counts.stdout.trim().split(/\s+/).map((n) => Math.abs(parseInt(n, 10)) || 0)
-        : [0, 0];
-      return { refsAt: now, dirtyAt, unsure: false, info: { ...info, branch: branch || null, upstream, ahead, behind } };
-    }
-    let repoInfo = info;
-    if (!repoInfo?.repo) {
-      // A folder name may contain a newline, so ask for each path on its own.
-      const [top, common] = await allSettledValues(
-        exec("git", ["rev-parse", "--path-format=absolute", "--show-toplevel"], opts),
-        exec("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], opts),
-      );
-      if (gitNoRepo(top) || gitNoRepo(common)) return missing;
-      // Strip only Git's final newline: a folder name may contain whitespace.
-      const tree = top.stdout.replace(/\n$/, "");
-      const repo = common.stdout.replace(/\n$/, "");
-      if (top.code !== 0 || common.code !== 0 || !tree || !repo) return unsure;
-      repoInfo = { name: gitRepoName(repo), repo: JSON.stringify([on, repo]), linked: repo !== `${tree}/.git` };
-    }
-    // Avoid locks and fsmonitor cookies that would wake the repository watch.
-    const status = await exec("git", ["--no-optional-locks", "-c", "core.fsmonitor=false", "status", "--porcelain=v2", "--branch"], opts);
-    if (gitNoRepo(status)) return missing;
-    if (status.code !== 0) return unsure;
-    return { refsAt: now, dirtyAt: now, unsure: false, info: { ...repoInfo, ...gitBranchInfo(status.stdout) } };
-  } catch {
-    // Couldn't ask (the machine is away): keep what it showed, look again later.
-    return unsure;
-  }
-}
-// --- end shared git cache ---
-
 // A machine's core runs sixteen execs at once and the spaces panel may be using
 // six looks of two, so two places here keep a slow repository from crowding the
 // others out while leaving that room.
 const AT_ONCE = 2;
 const GIT_CURRENT_DIRTY_EVERY = 15000;
-const gitKey = (on, cwd) => JSON.stringify([on ?? null, cwd]);
-const machineOf = (address) => address.includes("/") ? address.split("/")[0] : null;
 
 // The agent's icon from the app's program table: a one-color glyph or a picture.
 function icon(p, size, color) {
@@ -380,7 +90,8 @@ function icon(p, size, color) {
 
 export default class Agents extends View {
   init(_props, cx) {
-    if (props()?.sortMenu) return;
+    const view = props();
+    if (view?.sortMenu || view?.sidebarSettings) return;
     this.folded = new Set();
     this.openChildren = new Map();
     this.hoveredChild = null;
@@ -407,12 +118,12 @@ export default class Agents extends View {
       for (;;) {
         const command = String(await nextCommand());
         const sort = SORTS.find(s => `sort-${s.id}` === command);
-        if (sort) setShared("agents.sort", sort.id);
+        if (sort) setShared(AGENT_SORT, sort.id);
       }
     });
     // Out of sight, Git lookups and age ticks wait for the window to show again.
-    cx.timer.every(5000, (cx) => { if (windowVisible()) this.refreshGit(cx); });
-    cx.timer.every(30000, (cx) => { if (windowVisible()) cx.notify(); });
+    cx.timer.every(5000, (cx) => { if (shown()) this.refreshGit(cx); });
+    cx.timer.every(30000, (cx) => { if (shown()) cx.notify(); });
   }
 
   close() {
@@ -526,7 +237,7 @@ export default class Agents extends View {
         this.gitBusy = false;
         writeGitStore(results);
         cx.notify();
-        if (this.gitForced.size && windowVisible()) this.refreshGit(cx);
+        if (this.gitForced.size && shown()) this.refreshGit(cx);
       }
     });
   }
@@ -635,7 +346,7 @@ export default class Agents extends View {
         .text_color(t.foreground)
         .hover((el) => el.bg(t.hover))
         .on_click(() => {
-          setShared("agents.sort", s.id);
+          setShared(AGENT_SORT, s.id);
           closeOverlay(props().overlay);
         })
         .child(svg(`mods/workspace-chrome/${s.icon}.svg`).size(14).flex_none().text_color(t.muted))
@@ -750,24 +461,22 @@ export default class Agents extends View {
 
   // compact: a ! for blocked where a header already says "Needs you".
   status(t, a, compact = false) {
-    const color = t[a.status] ?? t.dim;
-    if (a.status === "working") return svg("mods/workspace-chrome/spinner.svg").size(12).mx(1).flex_none().text_color(t.working).spin(900);
-    if (a.status === "blocked" && compact) return div().size(14).flex_none().rounded(4).bg(t.blocked + "26").text_size(10.5).font_bold().text_color(t.blocked).flex().items_center().justify_center().child("!");
-    if (a.status === "blocked") return div().flex_none().px(6).h(18).rounded(5).bg(t.blocked + "26").text_size(10.5).font_semibold().text_color(t.blocked).flex().items_center().child("Needs you");
-    // Idle: a ring; done: a dot.
-    if (a.status === "idle") return div().size(7).mx(3).flex_none().rounded(4).border(1.5).border_color(t.idle ?? t.dim);
-    return div().size(7).mx(3).flex_none().rounded(4).bg(a.status === "done" ? color : t.dim + "00");
+    if (a.status === "blocked" && !compact) return div().flex_none().px(6).h(18).rounded(5).bg(t.blocked + "26").text_size(10.5).font_semibold().text_color(t.blocked).flex().items_center().child("Needs you");
+    if (a.status === "done") return statusDot(t.done ?? t.dim);
+    return mark(a.status, t) ?? statusDot(t.dim + "00");
   }
 
   render(cx) {
     const t = theme();
-    if (props()?.sortMenu) return this.sortMenu(t);
+    const view = props();
+    if (view?.sortMenu) return this.sortMenu(t);
+    if (view?.sidebarSettings) return settingsDialog(t, view.overlay);
     const collapsed = narrow();
     const leading = statusAtStart();
-    const expandChildren = shared("sidebar.agents.expandChildren") !== false;
-    const showBranch = shared("sidebar.git.showBranch") !== false;
-    const showChanges = shared("sidebar.git.showChanges") !== false;
-    const showSync = shared("sidebar.git.showSync") !== false;
+    const expandChildren = enabled(EXPAND_CHILDREN);
+    const showBranch = enabled(SHOW_GIT_BRANCH);
+    const showChanges = enabled(SHOW_GIT_CHANGES);
+    const showSync = enabled(SHOW_GIT_SYNC);
     const px = sidebarPx();
     const sort = sortOf();
     let list = [...agents()];
@@ -840,7 +549,6 @@ export default class Agents extends View {
     }
     if (!checking()) this.migratePins(all);
     const active = focus?.shown ?? focus?.terminal ?? focus?.agent ?? list.find(a => a.focused)?.address ?? null;
-    const shown = active;
     // Only a new navigation unfolds the target. A manually folded current group
     // stays folded until focus leaves and returns.
     const navigated = active !== this.revealed;
@@ -855,7 +563,7 @@ export default class Agents extends View {
     const places = this.gitPlaces = this.places(list, ps, focus);
     this.adoptGit(new Set(places.map(([key]) => key)));
     this.trackGitBranches(places, now);
-    if (!checking() && windowVisible() && (firstGit || this.gitForced.size)) this.refreshGit(cx);
+    if (!checking() && shown() && (firstGit || this.gitForced.size)) this.refreshGit(cx);
     const tabCounts = new Map();
     for (const a of list) tabCounts.set(a.tab, (tabCounts.get(a.tab) ?? 0) + 1);
     const byPriority = sort.id === "priority";
@@ -895,7 +603,7 @@ export default class Agents extends View {
       if (navigated && !childrenOpen(a.address) && subs.some(s => s.t.address === active)) this.openChildren.set(a.address, true);
       const r = indexed(row(a, i, subs), a.address);
       if (!childrenOpen(a.address)) return [r];
-      return [r, ...subs.map(s => indexed(this.subRow(t, s, shown), s.t.address))];
+      return [r, ...subs.map(s => indexed(this.subRow(t, s, active), s.t.address))];
     };
 
     // When folded, show the child count and use the most urgent child's color.
@@ -1104,16 +812,17 @@ export default class Agents extends View {
             .items_center()
             .justify_between()
             .child(div().text_size(11.5).font_medium().text_color(t.dim).child("Agents"))
-            .child(
-              div()
+            .child(h_flex().items_center().gap(4)
+              .when(!find(layout(), node => node.content?.mod === "sidebar-spaces"), el =>
+                el.child(settingsButton(t, openSettings)))
+              .child(div()
                 .id("ag-sort")
                 .text_size(11)
                 .text_color(t.dim)
                 .hover((s) => s.text_color(t.foreground))
                 .on_click(() => openOverlay({ mod: "sidebar-agents", kind: "popup", width: 200, height: 140, props: { sortMenu: true } }))
                 .tooltip(`Sort agents: ${sort.label}`)
-                .child(svg(`mods/workspace-chrome/${sort.icon}.svg`).size(14)),
-            ),
+                .child(svg(`mods/workspace-chrome/${sort.icon}.svg`).size(14)))),
         ),
       )
       .when(list.length === 0 && !collapsed, (el) =>

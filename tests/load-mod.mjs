@@ -1,9 +1,8 @@
 // Load a Herdr sidebar mod into a node:vm context with small, inspectable mocks.
 //
 // The mods are plain scripts for Herdr: no package.json, no installed `gpui-kit`
-// or `herdr` packages. This loader removes their imports and exposes the default
-// View class as `globalThis.Mod`, then supplies just enough host surface for the
-// pure logic (git scheduling, due(), watch cleanup) to run under node:test.
+// or `herdr` packages. This loader evaluates local imports in their own scopes,
+// replaces host imports with mocks, and exposes the default View as `globalThis.Mod`.
 //
 // Deliberately not a browser or Herdr emulator. UI builders are a fluent proxy:
 // chains work, `.when(cond, fn)` runs `fn` only when `cond` is true, and the
@@ -282,11 +281,26 @@ function createContext() {
   return context;
 }
 
-function stripModuleSyntax(source) {
-  return source
-    .replace(/^import\s+[^;]*;\s*$/gm, "")
+// The mods use named local imports and declaration exports. Evaluate dependencies
+// first and keep each one's declarations scoped to that module.
+function evaluateModule(file, sandbox, entry = false) {
+  const exports = [];
+  const source = readFileSync(file, "utf8")
+    .replace(/^import\s+([^;]+?)\s+from\s+"([^"]+)";$/gm, (_line, bindings, specifier) => {
+      if (!specifier.startsWith(".")) return "";
+      const dependency = new URL(specifier, file);
+      if (!sandbox.moduleImports.has(dependency.href)) {
+        sandbox.moduleImports.set(dependency.href, evaluateModule(dependency, sandbox));
+      }
+      return `const ${bindings} = moduleImports.get(${JSON.stringify(dependency.href)});`;
+    })
     .replace(/^export\s+default\s+class\s+/m, "globalThis.Mod = class ")
-    .replace(/^export\s+(?=(?:function|class|const|let|var)\b)/gm, "");
+    .replace(/^export\s+((?:async\s+)?(?:function|class|const|let|var)\s+(\w+))/gm, (_line, declaration, name) => {
+      exports.push(name);
+      return declaration;
+    });
+  const script = entry ? source : `(() => {\n${source}\nreturn { ${exports.join(", ")} };\n})()`;
+  return new vm.Script(script, { filename: fileURLToPath(file) }).runInContext(sandbox);
 }
 
 // loadMod("sidebar-spaces", { exec: ... }, { "machines.folded": "[]" })
@@ -295,8 +309,7 @@ function stripModuleSyntax(source) {
 // localStorage. Mocks are live: after loading, assign `herdr.exec = ...` and the
 // mod's `exec(...)` calls see the replacement.
 export function loadMod(name, herdrOverrides = {}, storage = {}) {
-  const file = fileURLToPath(new URL(`mods/${name}/main.js`, ROOT));
-  const source = stripModuleSyntax(readFileSync(file, "utf8"));
+  const file = new URL(`mods/${name}/main.js`, ROOT);
 
   const context = createContext();
   const gpui = gpuiMocks();
@@ -306,6 +319,7 @@ export function loadMod(name, herdrOverrides = {}, storage = {}) {
 
   const sandbox = {
     console,
+    moduleImports: new Map(),
     localStorage: createStorage(storage),
     setTimeout,
     clearTimeout,
@@ -327,7 +341,7 @@ export function loadMod(name, herdrOverrides = {}, storage = {}) {
   }
 
   vm.createContext(sandbox);
-  new vm.Script(source, { filename: file }).runInContext(sandbox);
+  evaluateModule(file, sandbox, true);
 
   const Class = sandbox.Mod;
   if (typeof Class !== "function") throw new Error(`${name}: globalThis.Mod was not created`);

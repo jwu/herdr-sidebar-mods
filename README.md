@@ -58,10 +58,11 @@ In your personal layout, set `content.pane.header.content.mod` to `pane-header` 
 
 - Drag machine headers to reorder them. To make `Ctrl+1` through `Ctrl+9` follow the visible Spaces order, map them to `sidebar-spaces.pick1` through `sidebar-spaces.pick9` under `layout:sidebar` in `~/.config/herdr-app/keys.json`.
 - Click a listening port to open it locally or copy its address if it’s on a remote machine.
+- Click the gear in the **Spaces** header to open Sidebar settings. If the current layout has **Agents** and no `sidebar-spaces` block, the gear appears beside the Agents sort button.
 - Click the coffee cup in the **Local** header to keep your Mac awake.
 - On Herdr App 0.1.18 and later:
   - To jump to agents in the order the Agents panel lists them, bind keys to `agent.select:1`, `agent.select:2`, and so on in `keys.json`. Pinned agents come first.
-  - The command palette lists **Sidebar settings**, **Keep this Mac awake (toggle)**, **Sort agents by priority**, and **Group agents by space**.
+  - Spaces adds **Sidebar settings** and **Keep this Mac awake (toggle)** to the command palette. Agents adds **Sort agents by priority** and **Group agents by space**.
   - The sidebar stops polling machines, ports, and Git while the window is minimized or hidden.
 - A pane renamed with **Rename** shows its name in the Agents panel instead of its folder.
 

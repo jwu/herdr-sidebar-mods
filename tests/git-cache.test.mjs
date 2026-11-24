@@ -1,17 +1,12 @@
-// The shared git cache both panels read and write (mods/*/main.js, the block
-// between the "shared git cache" markers): one answer per place, refs-only looks
-// between worktree walks, and shared answers showing up in the other panel
-// without asking Git again.
+// The shared git cache both panels read and write (mods/*/shared.js): one
+// answer per place, refs-only looks between worktree walks, and shared answers
+// showing up in the other panel without asking Git again.
 
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 
 import { loadMod, makeInstance, makeDeferred, waitFor, flushTurns } from "./load-mod.mjs";
-
-const ROOT = new URL("../", import.meta.url);
-const source = (name) => readFileSync(fileURLToPath(new URL(`mods/${name}/main.js`, ROOT)), "utf8");
 const keyOf = (on, cwd) => JSON.stringify([on ?? null, cwd]);
 const now = () => Date.now();
 const CACHE = "sidebar.git.v1";
@@ -88,16 +83,12 @@ async function refreshSpaces(p, keys) {
   await p.context.tasks.at(-1).promise;
 }
 
-test("both mods carry the same shared git cache block", () => {
-  const block = (name) => {
-    const text = source(name);
-    const start = text.indexOf("// --- shared git cache");
-    const end = text.indexOf("// --- end shared git cache ---");
-    assert.ok(start >= 0 && end > start, `${name}: the block is marked`);
-    return text.slice(start, end + "// --- end shared git cache ---".length);
-  };
-  assert.equal(block("sidebar-agents"), block("sidebar-spaces"));
-});
+for (const file of ["shared.js", "settings.js"]) {
+  test(`both mods carry the same ${file} file`, () => {
+    const source = name => readFileSync(new URL(`../mods/${name}/${file}`, import.meta.url));
+    assert.deepEqual(source("sidebar-agents"), source("sidebar-spaces"));
+  });
+}
 
 test("a place one panel looked at shows in the other without asking Git", async () => {
   const store = sharedStore();

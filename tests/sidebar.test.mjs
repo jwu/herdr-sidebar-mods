@@ -164,6 +164,63 @@ test("Sidebar settings applies the selected status position to both panels", () 
   assert.deepEqual(closed, ["settings-overlay"]);
 });
 
+test("Agents shows a settings gear beside sort when the layout has no Spaces mod", () => {
+  const overlays = [];
+  const { instance, context } = init("sidebar-agents", {
+    layout: () => ({ id: "sidebar", children: [
+      { type: "block", content: { mod: "spaces" } },
+      { type: "block", content: { mod: "sidebar-agents" } },
+    ] }),
+    openOverlay: spec => overlays.push(spec),
+  });
+  const root = instance.render(context);
+  const gear = byId(root, "sidebar-settings");
+  const sort = byId(root, "ag-sort");
+  assert.ok(gear);
+  assert.ok(sort);
+  const controls = [...nodes(root)].find(node => uiState(node).children.includes(gear));
+  assert.ok(uiState(controls).children.includes(sort));
+  uiState(gear).handlers.on_click();
+  assert.deepEqual(structuredClone(overlays), [
+    { mod: "sidebar-agents", kind: "dialog", width: 510, height: 590, props: { sidebarSettings: true } },
+  ]);
+});
+
+test("Agents hides the settings gear when Spaces is nested in the current layout", () => {
+  const { instance, context } = init("sidebar-agents", {
+    layout: () => ({ type: "row", children: [{ id: "sidebar", type: "column", children: [
+      { type: "block", content: { mod: "sidebar-agents" } },
+      { type: "stack", children: [{ type: "block", content: { mod: "sidebar-spaces" } }] },
+    ] }] }),
+  });
+  const root = instance.render(context);
+  assert.equal(byId(root, "sidebar-settings"), undefined);
+  assert.ok(byId(root, "ag-sort"));
+});
+
+test("Agents settings overlay renders without starting the panel", () => {
+  const unexpected = () => assert.fail("the settings overlay started the Agents panel");
+  const changed = [], closed = [];
+  const { instance, context, mocks, storage } = init("sidebar-agents", {
+    checking: () => false,
+    props: () => ({ sidebarSettings: true, overlay: "agent-settings" }),
+    setShared: (key, value) => changed.push([key, value]),
+    closeOverlay: id => closed.push(id),
+    agents: unexpected, setBadge: unexpected, setAgentOrder: unexpected,
+  }, { pins: "[]" });
+  const dialog = instance.render(context);
+  assert.match(textOf(dialog), /Sidebar Settings/);
+  assert.equal(context.tasks.length, 0);
+  assert.equal(context.timers.length, 0);
+  assert.equal(mocks.gpuiBase.scrollHandles.length, 0);
+  assert.equal(storage.getItem("pins"), "[]");
+  uiState(byId(dialog, "setting-agents.sort-grouped")).handlers.on_click();
+  assert.deepEqual(changed, [["agents.sort", "grouped"]]);
+  uiState(byId(dialog, "settings-done")).handlers.on_click();
+  instance.close();
+  assert.deepEqual(closed, ["agent-settings"]);
+});
+
 test("Sidebar display preferences affect both lists and preserve individual fold choices", () => {
   const values = new Map();
   const shared = key => values.get(key);
