@@ -679,23 +679,30 @@ export default class Agents extends View {
   }
 
   // Skip plain terminals in the tree while keeping any agents they started.
-  agentChildren(all, addr) {
-    return all.filter(k => k.parent === addr && k.state === "live").flatMap(k =>
+  agentChildren(addr) {
+    return (this.liveChildren.get(addr) ?? []).flatMap(k =>
       this.listed.has(k.address) || RANK[kidStatus(k, this.listed)]
         ? [k]
-        : this.agentChildren(all, k.address));
+        : this.agentChildren(k.address));
   }
 
   // Live sub-agents of `addr`, depth first, each with the tree lines in front of it.
-  tree(all, addr, lead = []) {
-    const kids = this.agentChildren(all, addr);
-    return kids.flatMap((k, i) => {
-      const last = i === kids.length - 1;
-      return [
-        { t: k, lines: [...lead, last ? "└" : "├"] },
-        ...this.tree(all, k.address, [...lead, last ? "" : "│"]),
-      ];
-    });
+  tree(addr) {
+    const cached = this.trees.get(addr);
+    if (cached) return cached;
+    const walk = (parent, lead) => {
+      const kids = this.agentChildren(parent);
+      return kids.flatMap((k, i) => {
+        const last = i === kids.length - 1;
+        return [
+          { t: k, lines: [...lead, last ? "└" : "├"] },
+          ...walk(k.address, [...lead, last ? "" : "│"]),
+        ];
+      });
+    };
+    const rows = walk(addr, []);
+    this.trees.set(addr, rows);
+    return rows;
   }
 
   subRow(t, s, shown) {
@@ -802,8 +809,17 @@ export default class Agents extends View {
     // neither a pane nor a row in an attached agent's tree.
     const ps = panes();
     const paneByTerminal = new Map(ps.filter(p => p.terminal).map(p => [p.terminal, p]));
-    const terminalByAddress = new Map(all.map(term => [term.address, term]));
-    const nestedUnderPane = new Set(list.flatMap(a => this.tree(all, a.address).map(s => s.t.address)));
+    const terminalByAddress = new Map();
+    this.liveChildren = new Map();
+    this.trees = new Map();
+    for (const term of all) {
+      terminalByAddress.set(term.address, term);
+      if (term.state !== "live" || !term.parent) continue;
+      const kids = this.liveChildren.get(term.parent);
+      if (kids) kids.push(term);
+      else this.liveChildren.set(term.parent, [term]);
+    }
+    const nestedUnderPane = new Set(list.flatMap(a => this.tree(a.address).map(s => s.t.address)));
     for (const term of all) {
       const status = term.status === "error" ? "blocked" : term.status;
       if (term.state !== "live" || !RANK[status] || paneByTerminal.has(term.address) ||
@@ -864,13 +880,13 @@ export default class Agents extends View {
     this.hold(list);
     // A kept sub-agent (one with a pane) is in agents() too: where a tree shows
     // it, it gets no row of its own, unless it's pinned.
-    const nested = new Set(collapsed ? [] : list.flatMap((a) => this.tree(all, a.address).map((s) => s.t.address)));
+    const nested = new Set(collapsed ? [] : list.flatMap((a) => this.tree(a.address).map((s) => s.t.address)));
     list = list.filter((a) => a.pinned || !nested.has(a.address));
     const tabCounts = new Map();
     for (const a of list) tabCounts.set(a.tab, (tabCounts.get(a.tab) ?? 0) + 1);
     const byPriority = sort.id === "priority";
     const urgency = new Map(list.map(a => {
-      const childRanks = this.tree(all, a.address).map(({ t }) => {
+      const childRanks = this.tree(a.address).map(({ t }) => {
         const status = kidStatus(t, this.listed);
         // Done belongs to the child. A plain terminal header has no status of its own.
         return status === "done" && !a.terminalParent ? RANK.idle : (RANK[status] ?? 0);
@@ -884,7 +900,7 @@ export default class Agents extends View {
     const rest = list.filter((a) => !a.pinned);
     list = [...pinned, ...rest];
     if (!checking()) setAgentOrder(list.flatMap(a => a.terminalParent
-      ? this.tree(all, a.address).map(s => s.t.address).filter(address => agentAddresses.has(address))
+      ? this.tree(a.address).map(s => s.t.address).filter(address => agentAddresses.has(address))
       : [a.address]));
 
     let offset = 0;
@@ -901,7 +917,7 @@ export default class Agents extends View {
       cx.notify();
     };
     const withKids = (a, i) => {
-      const subs = collapsed ? [] : this.tree(all, a.address);
+      const subs = collapsed ? [] : this.tree(a.address);
       if (navigated && !childrenOpen(a.address) && subs.some(s => s.t.address === active)) this.openChildren.set(a.address, true);
       const r = indexed(row(a, i, subs), a.address);
       if (!childrenOpen(a.address)) return [r];
@@ -1085,7 +1101,7 @@ export default class Agents extends View {
           .child(svg("mods/workspace-chrome/chevron-right.svg").size(11).flex_none().text_color(t.dim)));
     };
     if (navigated) for (const g of groups) {
-      if (g.members.some(a => a.address === active || this.tree(all, a.address).some(s => s.t.address === active))) this.folded.delete(g.id);
+      if (g.members.some(a => a.address === active || this.tree(a.address).some(s => s.t.address === active))) this.folded.delete(g.id);
     }
     const rows = collapsed
       ? list.flatMap(withKids)
