@@ -1,7 +1,7 @@
 // The shared git cache both panels read and write (mods/*/main.js, the block
 // between the "shared git cache" markers): one answer per place, refs-only looks
-// between worktree walks, one copy looking while the other reads, and an answer
-// landing in shared state showing up in the other panel without asking Git again.
+// between worktree walks, and shared answers showing up in the other panel
+// without asking Git again.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -19,21 +19,17 @@ const CACHE = "sidebar.git.v1";
 // herdr's shared state, as both mods see it: one store, values by key.
 function sharedStore() {
   const values = new Map();
+  const writes = [];
   return {
     values,
+    writes,
     shared: (key) => structuredClone(values.get(key)),
     setShared: (key, value) => {
+      if (key === CACHE) writes.push(value);
       values.set(key, value);
     },
-    // The store as the mods write it.
-    store: () => values.get(CACHE) ?? {},
     places: () => values.get(CACHE)?.places ?? {},
-    leases: () => values.get(CACHE)?.leases ?? {},
-    seed: (places, leases = {}) => values.set(CACHE, { places, leases }),
-    lease: (key, owner, at) => {
-      const held = { ...values.get(CACHE) };
-      values.set(CACHE, { places: held.places ?? {}, leases: { ...(held.leases ?? {}), [key]: { owner, at } } });
-    },
+    seed: (places) => values.set(CACHE, { places }),
   };
 }
 
@@ -54,8 +50,8 @@ const info = (over = {}) => ({
 const record = (over = {}) => ({ at: now(), refsAt: now(), dirtyAt: now(), info: info(), unsure: false, ...over });
 
 // Answers the way Git does, per place: each test overrides what it cares about.
-// The walk is two rev-parse runs and a status; the refs look is a branch, an
-// upstream and the ahead/behind counts.
+// The first walk is two rev-parse runs and a status; later walks use status.
+// A refs look asks for a branch, an upstream and the ahead/behind counts.
 function responds(answers = {}) {
   const calls = [];
   const exec = async (_cmd, args, opts) => {
@@ -80,6 +76,18 @@ function panel(name, store, overrides = {}, extra = {}) {
   return { ...loaded, instance };
 }
 
+function renderPanel(name, store, overrides = {}) {
+  const p = loadMod(name, { ...store, ...overrides, checking: () => true });
+  const instance = new p.Class();
+  instance.init({}, p.context);
+  return { ...p, instance, render: () => instance.render(p.context) };
+}
+
+async function refreshSpaces(p, keys) {
+  p.instance.refreshGit(keys, p.context);
+  await p.context.tasks.at(-1).promise;
+}
+
 test("both mods carry the same shared git cache block", () => {
   const block = (name) => {
     const text = source(name);
@@ -99,7 +107,7 @@ test("a place one panel looked at shows in the other without asking Git", async 
   const spaces = panel("sidebar-spaces", store, { exec: git.exec });
   const key = keyOf(null, "/repo");
   spaces.instance.gitWalk.add(key);
-  await spaces.instance.check(key, spaces.context);
+  await refreshSpaces(spaces, [key]);
   assert.equal(git.calls.length, 3, "a first look is the repo and the worktree");
   assert.equal(store.places()[key].info.branch, "feature");
   assert.equal(store.places()[key].info.dirty, 2);
@@ -127,7 +135,7 @@ test("both panels name worktrees from a hidden bare repo after its project", asy
   const git = responds({ "/repo/worktree": { common: { code: 0, stdout: common + "\n" } } });
   const spaces = panel("sidebar-spaces", store, { exec: git.exec });
   spaces.instance.gitWalk.add(key);
-  await spaces.instance.check(key, spaces.context);
+  await refreshSpaces(spaces, [key]);
   assert.equal(spaces.instance.git[key].name, "repo");
   assert.equal(spaces.instance.git[key].linked, true);
 
@@ -142,24 +150,59 @@ test("both panels name worktrees from a hidden bare repo after its project", asy
   assert.equal(git.calls.length, 3, "the old cache can be used without asking Git again");
 });
 
-test("a look the other panel just took stands in for a queued one", async () => {
-  const store = sharedStore();
-  const key = keyOf(null, "/queued");
-  const seeded = record({ at: now() - 5000, refsAt: now() - 5000, dirtyAt: now() - 5000 });
-  store.seed({ [key]: seeded });
+for (const walk of [true, false]) {
+  test(`a peer ${walk ? "walk" : "refs read"} taken since the request satisfies it`, async () => {
+    const store = sharedStore();
+    const key = keyOf(null, "/queued");
+    const seeded = record({ at: now() - 5000, refsAt: now() - 5000, dirtyAt: now() - 5000 });
+    store.seed({ [key]: seeded });
 
-  const git = responds();
-  const spaces = panel("sidebar-spaces", store, { exec: git.exec });
-  spaces.instance.git[key] = seeded.info;
-  spaces.instance.checked[key] = seeded.at;
-  spaces.instance.gitWalk.add(key);
-  // The queue's snapshot is the seeded record; by the time the look runs, a peer
-  // has answered: that answer is used, not a second look.
-  spaces.instance.gitQueued = { [key]: seeded };
-  store.seed({ [key]: record({ at: now(), refsAt: now(), dirtyAt: now(), info: info({ branch: "peer" }) }) });
-  await spaces.instance.check(key, spaces.context);
-  assert.equal(git.calls.length, 0);
-  assert.equal(spaces.instance.git[key].branch, "peer");
+    const git = responds();
+    const spaces = panel("sidebar-spaces", store, { exec: git.exec });
+    spaces.instance.adoptGit(new Set([key]));
+    if (walk) spaces.instance.gitWalk.add(key);
+    else spaces.instance.gitForced.add(key);
+    spaces.instance.refreshGit([key], spaces.context);
+    const at = spaces.instance.gitRequested.get(key) + 1;
+    const peer = record({ at, refsAt: at, dirtyAt: walk ? at : seeded.dirtyAt, info: info({ branch: "peer" }) });
+    store.seed({ [key]: peer });
+    await spaces.context.tasks.at(-1).promise;
+    assert.equal(git.calls.length, 0);
+    assert.equal(spaces.instance.git[key].branch, "peer");
+    assert.equal(store.writes.length, 0, "using a peer answer leaves the store alone");
+  });
+}
+
+test("a forced refs request added to a busy Spaces pool reads past the old peer answer", async () => {
+  const store = sharedStore();
+  const slow = keyOf("vps", "/slow");
+  const key = keyOf(null, "/repo");
+  const git = responds({ "/repo": { ref: { code: 0, stdout: "refs/heads/after-commit\n", stderr: "" } } });
+  const gate = makeDeferred();
+  let started = false;
+  const spaces = panel("sidebar-spaces", store, {
+    exec: async (cmd, args, opts) => {
+      if (opts.cwd === "/slow") {
+        started = true;
+        await gate.promise;
+      }
+      return git.exec(cmd, args, opts);
+    },
+  });
+  spaces.instance.refreshGit([slow], spaces.context);
+  const task = spaces.context.tasks.at(-1);
+  await waitFor(() => started);
+  const answered = now();
+  spaces.vm.Date = class extends Date { static now() { return answered; } };
+  store.seed({ [key]: record({ at: answered, refsAt: answered, dirtyAt: answered }) });
+  spaces.instance.gitForced.add(key);
+  spaces.instance.refreshGit([key], spaces.context);
+  gate.resolve();
+  await task.promise;
+  assert.ok(git.calls.includes("symbolic-ref -q HEAD"));
+  assert.equal(store.places()[key].info.branch, "after-commit");
+  assert.equal(store.places()[key].dirtyAt, answered);
+  assert.ok(store.places()[key].at > answered, "the other panel can adopt the refresh");
 });
 
 test("between walks only the refs are read, and the worktree's counts stay", async () => {
@@ -171,9 +214,9 @@ test("between walks only the refs are read, and the worktree's counts stay", asy
 
   const git = responds({ "/repo": { counts: { code: 0, stdout: "2\t1\n", stderr: "" } } });
   const spaces = panel("sidebar-spaces", store, { exec: git.exec });
-  spaces.instance.adoptGit();
+  spaces.instance.adoptGit(new Set([key]));
   // A fallback look (nothing in this panel changed): refs only.
-  await spaces.instance.check(key, spaces.context);
+  await refreshSpaces(spaces, [key]);
 
   assert.deepEqual(git.calls.sort(), [
     "rev-list --left-right --count HEAD...@{upstream}",
@@ -241,16 +284,41 @@ test("a branch without an upstream, a detached HEAD and an unborn branch are ans
   assert.equal(away.unsure, true);
 });
 
-test("a folder that left git clears its answer, and a worktree git cannot name keeps it", async () => {
+test("a second worktree walk uses only status and keeps the repo identity", async () => {
+  const store = sharedStore();
+  const cwd = "/repo/worktree";
+  const key = keyOf(null, cwd);
+  const answers = { [cwd]: { common: { code: 0, stdout: "/repo/.git\n", stderr: "" } } };
+  const git = responds(answers);
+  const spaces = panel("sidebar-spaces", store, { exec: git.exec });
+  await refreshSpaces(spaces, [key]);
+  assert.equal(git.calls.length, 3);
+  const { name, repo, linked } = spaces.instance.git[key];
+  assert.equal(linked, true);
+
+  // The scheduled second walk is due after the first.
+  const later = store.places()[key].at + 60001;
+  spaces.vm.Date = class extends Date { static now() { return later; } };
+  answers[cwd].status = { code: 0, stdout: "# branch.head feature\n? untracked\n", stderr: "" };
+  git.calls.length = 0;
+  spaces.instance.gitWalk.add(key);
+  await refreshSpaces(spaces, [key]);
+  assert.deepEqual(git.calls, ["--no-optional-locks -c core.fsmonitor=false status --porcelain=v2 --branch"]);
+  assert.deepEqual({ ...store.places()[key].info }, info({ name, repo, linked, branch: "feature", upstream: null, dirty: 1 }));
+});
+
+test("a folder that left git clears its answer, and a transient status failure keeps it", async () => {
   const key = keyOf(null, "/gone");
   const store = sharedStore();
   store.seed({ [key]: { at: 1, refsAt: 1, dirtyAt: 1, info: info(), unsure: false } });
   const missing = { code: 128, stdout: "", stderr: "fatal: not a git repository (or any of the parent directories): .git\n" };
-  const spaces = panel("sidebar-spaces", store, { exec: responds({ "/gone": { top: missing, common: missing, status: missing } }).exec });
+  const git = responds({ "/gone": { status: missing } });
+  const spaces = panel("sidebar-spaces", store, { exec: git.exec });
   spaces.instance.git[key] = info();
   spaces.instance.checked[key] = 1;
   spaces.instance.gitWalk.add(key); // the walk, as a slow check would take
-  await spaces.instance.check(key, spaces.context);
+  await refreshSpaces(spaces, [key]);
+  assert.deepEqual(git.calls, ["--no-optional-locks -c core.fsmonitor=false status --porcelain=v2 --branch"]);
   assert.equal(spaces.instance.git[key], null);
   assert.equal(spaces.instance.unsure.has(key), false);
   assert.equal(store.places()[key].info, null);
@@ -259,7 +327,7 @@ test("a folder that left git clears its answer, and a worktree git cannot name k
   const other = keyOf(null, "/lost");
   const kept = info({ branch: "kept" });
   const lost = panel("sidebar-spaces", store, {
-    exec: responds({ "/lost": { top: { code: 128, stdout: "", stderr: "fatal: bad revision 'HEAD'\n" } } }).exec,
+    exec: responds({ "/lost": { status: { code: 128, stdout: "", stderr: "fatal: bad revision 'HEAD'\n" } } }).exec,
   });
   lost.instance.git[other] = kept;
   lost.instance.checked[other] = 1;
@@ -302,7 +370,7 @@ test("two machines' same folder are two places", async () => {
   for (const on of [null, "vps"]) {
     const key = keyOf(on, "/repo");
     spaces.instance.gitWalk.add(key);
-    await spaces.instance.check(key, spaces.context);
+    await refreshSpaces(spaces, [key]);
   }
   const local = store.places()[keyOf(null, "/repo")].info;
   const remote = store.places()[keyOf("vps", "/repo")].info;
@@ -325,7 +393,7 @@ test("the store drops places nobody looked at and stays bounded", async () => {
   const spaces = panel("sidebar-spaces", store, { exec: responds().exec });
   const key = keyOf(null, "/fresh");
   spaces.instance.gitWalk.add(key);
-  await spaces.instance.check(key, spaces.context);
+  await refreshSpaces(spaces, [key]);
 
   const places = store.places();
   assert.equal(key in places, true);
@@ -337,7 +405,7 @@ test("the store drops places nobody looked at and stays bounded", async () => {
 
 test("a damaged store is an empty one", async () => {
   const key = keyOf(null, "/repo");
-  for (const damaged of ["text", 42, [], null, { places: "text" }, { places: [], leases: 3 }]) {
+  for (const damaged of ["text", 42, [], null, { places: "text" }, { places: [] }]) {
     const store = sharedStore();
     store.values.set(CACHE, damaged);
     const spaces = panel("sidebar-spaces", store, { exec: responds().exec });
@@ -369,41 +437,20 @@ test("damaged records are not adopted, and adoption stays on the places shown", 
   assert.deepEqual(Object.keys(agents.instance.git), [good]);
 });
 
-test("a place another copy is looking at is not looked at here", async () => {
+test("checking renders the store and suppresses cache writes even if a pool runs", async () => {
   const store = sharedStore();
   const key = keyOf(null, "/repo");
-  store.seed({ [key]: { at: now() - 5000, refsAt: now() - 40000, dirtyAt: now() - 60000, info: info({ dirty: 2 }), unsure: false } });
-  store.lease(key, "another-copy", now());
+  store.seed({ [key]: record() });
   const git = responds();
-  const spaces = panel("sidebar-spaces", store, { exec: git.exec });
-  spaces.instance.git[key] = info({ dirty: 2 });
-  spaces.instance.checked[key] = now() - 5000;
-  await spaces.instance.check(key, spaces.context);
-  assert.equal(git.calls.length, 0, "the copy looking at it now answers instead");
-  assert.equal(spaces.instance.git[key].dirty, 2);
-
-  // A claim older than a look does not block: that copy reloaded or died.
-  store.lease(key, "another-copy", now() - 60000);
-  await spaces.instance.check(key, spaces.context);
-  assert.ok(git.calls.length > 0, "a stale claim is not a lock");
-});
-
-test("checking renders the store but never writes it", async () => {
-  const key = keyOf(null, "/repo");
-  let writes = 0;
-  const loaded = loadMod("sidebar-spaces", {
-    checking: () => true,
-    shared: () => ({ places: { [key]: record() }, leases: {} }),
-    setShared: () => writes++,
-    exec: () => {
-      throw new Error("a check asks Git nothing");
-    },
+  const spaces = renderPanel("sidebar-spaces", store, {
+    spaces: () => [{ id: "s1", folder: "/repo", tabs: [] }],
+    exec: git.exec,
   });
-  const instance = makeInstance(loaded.Class);
-  instance.adoptGit();
-  assert.equal(instance.git[key].branch, "main", "what is known is drawn");
-  await instance.check(key, loaded.context);
-  assert.equal(writes, 0);
+  spaces.render();
+  assert.equal(spaces.instance.git[key].branch, "main", "what is known is drawn");
+  assert.equal(git.calls.length, 0);
+  await refreshSpaces(spaces, [keyOf(null, "/other")]);
+  assert.equal(store.writes.length, 0);
 });
 
 test("spaces walks the worktree when its counts are old, even with the refs fresh", () => {
@@ -411,8 +458,7 @@ test("spaces walks the worktree when its counts are old, even with the refs fres
   const key = keyOf(null, "/repo");
   store.seed({ [key]: { at: now() - 1000, refsAt: now() - 1000, dirtyAt: now() - 61000, info: info(), unsure: false } });
   const spaces = panel("sidebar-spaces", store, { window: () => ({ active: true, platform: "macos" }), machines: () => [] });
-  spaces.instance.git[key] = info();
-  spaces.instance.checked[key] = now() - 1000;
+  spaces.instance.adoptGit(new Set([key]));
   const due = spaces.instance.due(now(), [{ id: "s1", folder: "/repo", tabs: [] }], [{ tab: "t1", cwd: "/repo" }]);
   assert.equal(due.has(key), true);
   assert.equal(spaces.instance.gitWalk.has(key), true, "the worktree, not only the refs");
@@ -487,6 +533,90 @@ test("spaces keeps a watch on a repo the other panel answered for", async () => 
   assert.deepEqual(watched, ["/repo/.git"], "changes there reach this panel");
 });
 
+test("Spaces renders never start or cancel watches for Agents-only repos", async () => {
+  const store = sharedStore();
+  const home = keyOf(null, "/home");
+  const other = keyOf(null, "/other");
+  store.seed({ [home]: record({ info: null }), [other]: record({ info: info({ repo: keyOf(null, "/other/.git") }) }) });
+  let started = 0;
+  let cancelled = 0;
+  const spaces = renderPanel("sidebar-spaces", store, {
+    spaces: () => [{ id: "s1", folder: "/home", tabs: [] }],
+    watchFolder: () => {
+      started++;
+      const gate = makeDeferred();
+      gate.promise.cancel = () => { cancelled++; gate.resolve([]); };
+      return gate.promise;
+    },
+  });
+  for (let i = 0; i < 5; i++) {
+    spaces.render();
+    assert.equal(other in spaces.instance.git, false);
+    spaces.instance.checkNew(spaces.context);
+    await flushTurns(1);
+  }
+  assert.equal(started, 0);
+  assert.equal(cancelled, 0);
+});
+
+for (const name of ["sidebar-spaces", "sidebar-agents"]) {
+  test(`${name}: a remote branch change forces a refs look with fresh cache ages`, async () => {
+    const store = sharedStore();
+    const key = keyOf("vps", "/repo");
+    const at = now() - 1000;
+    store.seed({ [key]: record({ at, refsAt: at, dirtyAt: at, info: info({ repo: keyOf("vps", "/repo/.git") }) }) });
+    const git = responds({ "/repo": { ref: { code: 0, stdout: "refs/heads/feature\n", stderr: "" } } });
+    let branch = "main";
+    const p = renderPanel(name, store, {
+      spaces: () => [{ id: "vps/s1", machine: "vps", folder: "/repo", branch, tabs: [] }],
+      agents: () => [{ address: "vps/t1", pane: "vps/p1", status: "idle" }],
+      panes: () => [{ pane: "vps/p1", cwd: "/repo", branch }],
+      exec: git.exec,
+      watchFolder: () => assert.fail("remote repo watch"),
+    });
+    p.herdr.checking = () => false;
+    const refresh = () => {
+      p.render();
+      if (name === "sidebar-spaces") p.instance.checkNew(p.context);
+    };
+    refresh();
+    assert.equal(git.calls.length, 0);
+    branch = "feature";
+    refresh();
+    await p.context.tasks.at(-1).promise;
+    assert.ok(git.calls.includes("symbolic-ref -q HEAD"));
+    assert.ok(git.calls.every(line => !line.includes("status")));
+    assert.equal(p.instance.git[key].branch, "feature");
+  });
+}
+
+test("Agents looks at pane-less rows and terminal parents using their live folders", async () => {
+  const store = sharedStore();
+  const other = keyOf(null, "/space-only");
+  store.seed({ [other]: record() });
+  const standalone = keyOf("vps", "/standalone");
+  const parent = keyOf(null, "/parent");
+  const child = keyOf(null, "/child");
+  const git = responds();
+  const agents = renderPanel("sidebar-agents", store, {
+    terminals: () => [
+      { address: "vps/solo", cwd: "/standalone", state: "live", status: "working" },
+      { address: "parent", cwd: "/parent", state: "live" },
+      { address: "child", parent: "parent", cwd: "/child", state: "live", status: "working" },
+      { address: "unrelated", cwd: "/unrelated", state: "live" },
+    ],
+    exec: git.exec,
+  });
+  agents.herdr.checking = () => false;
+  agents.render();
+  assert.equal(other in agents.instance.git, false, "a Spaces-only record stays out of the list");
+  assert.deepEqual(new Set(Array.from(agents.instance.places(), ([key]) => key)), new Set([standalone, parent]));
+  await agents.context.tasks.at(-1).promise;
+  assert.equal(store.places()[standalone].info.repo, keyOf("vps", "/standalone/.git"));
+  assert.equal(store.places()[parent].info.repo, keyOf(null, "/parent/.git"));
+  assert.equal(child in store.places(), false, "the sub-row has no Git tail");
+});
+
 test("Agents refreshes worktree counts sooner in the current space and the agent being viewed", async () => {
   const store = sharedStore();
   const cwd = ["/current", "/background", "/peek"];
@@ -496,7 +626,7 @@ test("Agents refreshes worktree counts sooner in the current space and the agent
   const git = responds(Object.fromEntries(cwd.map(path => [path, {
     status: { code: 0, stdout: "# branch.head main\n? new-file\n", stderr: "" },
   }])));
-  const agents = panel("sidebar-agents", store, {
+  const agents = renderPanel("sidebar-agents", store, {
     agents: () => [
       { pane: "p0", address: "t0", space: "current" },
       { pane: "p1", address: "t1", space: "background" },
@@ -507,7 +637,8 @@ test("Agents refreshes worktree counts sooner in the current space and the agent
     focused: () => ({ space: "current", terminal: "editor", shown: "t2" }),
     exec: git.exec,
   });
-  agents.instance.refreshGit(agents.context);
+  agents.herdr.checking = () => false;
+  agents.render();
   await agents.context.flush();
   assert.equal(git.calls.filter(line => line.includes("status")).length, 2);
   assert.deepEqual(keys.map(key => agents.instance.git[key].dirty), [1, 0, 1]);
@@ -529,7 +660,8 @@ test("the agents panel walks the worktree less often than it reads refs", async 
   // Half a minute later the refs are due again, the walk is not.
   git.calls.length = 0;
   const kept = store.places()[key];
-  store.seed({ [key]: { ...kept, at: now() - 31000, refsAt: now() - 31000 } });
+  const later = kept.refsAt + 31000;
+  agents.vm.Date = class extends Date { static now() { return later; } };
   agents.instance.refreshGit(agents.context);
   await agents.context.flush();
   assert.deepEqual(git.calls.sort(), [
@@ -603,36 +735,36 @@ test("the agents panel looks at two places at a time and a slow one holds nothin
 });
 
 for (const name of ["sidebar-spaces", "sidebar-agents"]) {
-  test(`${name}: a simultaneous first look waits for the peer's answer without poisoning adoption`, async () => {
+  test(`${name}: one cache write per pool merges the latest shared places`, async () => {
     const store = sharedStore();
-    const key = keyOf(null, "/repo");
+    const slow = keyOf(null, "/slow");
+    const fast = keyOf(null, "/fast");
+    const other = keyOf(null, "/other");
     const git = responds();
     const gate = makeDeferred();
-    const owner = panel("sidebar-spaces", store, {
-      exec: async (...args) => { await gate.promise; return git.exec(...args); },
+    const p = panel(name, store, {
+      exec: async (cmd, args, opts) => {
+        if (opts.cwd === "/slow") await gate.promise;
+        return git.exec(cmd, args, opts);
+      },
     });
-    const waiting = panel(name, store, { exec: () => assert.fail("duplicate Git query") });
-    const first = owner.instance.check(key, owner.context);
-    await waitFor(() => Boolean(store.leases()[key]));
-    if (name === "sidebar-spaces") await waiting.instance.check(key, waiting.context);
-    else await waiting.instance.check(key, { on: null, cwd: "/repo" });
-    assert.equal(key in waiting.instance.git, false, "a held lease is not a no-repository answer");
+    if (name === "sidebar-spaces") p.instance.refreshGit([slow, fast], p.context);
+    else {
+      p.instance.places = () => [[slow, { cwd: "/slow" }], [fast, { cwd: "/fast" }]];
+      p.instance.refreshGit(p.context);
+    }
+    const task = p.context.tasks.at(-1);
+    await waitFor(() => Boolean(p.instance.git[fast]));
+    assert.equal(store.writes.length, 0, "the pool is still running");
+    const fresh = p.instance.gitRecords[fast].at + 1;
+    store.seed({ [fast]: record({ at: fresh, info: info({ branch: "peer" }) }), [other]: record() });
     gate.resolve();
-    await first;
-    waiting.instance.adoptGit(new Set([key]));
-    assert.equal(waiting.instance.git[key].branch, "main");
-    assert.equal(git.calls.length, 3, "the two panels share one scan");
+    await task.promise;
+    assert.equal(store.writes.length, 1);
+    assert.deepEqual(Object.keys(store.places()).sort(), [slow, fast, other].sort());
+    assert.equal(store.places()[fast].info.branch, "peer", "keep the newer answer");
   });
 }
-
-test("a live lease outlasts both exec timeout phases", async () => {
-  const store = sharedStore();
-  const key = keyOf(null, "/repo");
-  store.lease(key, "peer", now() - 21000);
-  const spaces = panel("sidebar-spaces", store, { exec: () => assert.fail("lease expired before the full scan could finish") });
-  await spaces.instance.check(key, spaces.context);
-  assert.equal(key in spaces.instance.git, false);
-});
 
 test("shared-cache eviction preserves local scan ages instead of causing repeated scans", async () => {
   const store = sharedStore();

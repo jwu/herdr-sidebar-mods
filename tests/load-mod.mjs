@@ -364,7 +364,9 @@ export function makeInstance(Class, overrides = {}) {
       pending: new Set(), // places waiting to be checked
       gitInFlight: new Set(), // places a check already runs for
       gitWalk: new Set(), // places to walk for changed files, not only refs
-      gitForced: new Set(), // places whose refs to read now, freshness aside
+      gitForced: Class.name === "Agents" ? new Map() : new Set(),
+      gitRequested: new Map(), // places waiting for a scan and when it was requested
+      gitBranches: new Map(), // places and their last live branch
       watching: new Map(), // local repo -> its pending folder watch
       refreshing: false,
       at: {}, // space -> its where() at the last look
