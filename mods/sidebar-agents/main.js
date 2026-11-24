@@ -406,6 +406,7 @@ async function checkGit(key, place, prev, { walk = false, force = false } = {}) 
 // six looks of two, so two places here keep a slow repository from crowding the
 // others out while leaving that room.
 const AT_ONCE = 2;
+const GIT_CURRENT_DIRTY_EVERY = 15000;
 const gitKey = (on, cwd) => JSON.stringify([on ?? null, cwd]);
 
 // The agent's icon from the app's program table: a one-color glyph or a picture.
@@ -468,12 +469,17 @@ export default class Agents extends View {
   // the pane's live folder.
   places() {
     const cwdOf = new Map(panes().map((p) => [p.pane, p.cwd]));
+    const focus = focused();
+    const address = focus?.shown ?? focus?.terminal ?? focus?.agent;
     const out = new Map();
     for (const a of agents()) {
       const cwd = cwdOf.get(a.pane);
       if (!cwd) continue;
       const on = a.address.includes("/") ? a.address.split("/")[0] : null;
-      out.set(gitKey(on, cwd), { on, cwd });
+      const key = gitKey(on, cwd);
+      const current = a.focused || a.address === address || (focus?.space != null && a.space === focus.space);
+      const dirtyEvery = current ? GIT_CURRENT_DIRTY_EVERY : GIT_DIRTY_EVERY;
+      out.set(key, { on, cwd, dirtyEvery: Math.min(out.get(key)?.dirtyEvery ?? GIT_DIRTY_EVERY, dirtyEvery) });
     }
     return [...out.entries()];
   }
@@ -516,12 +522,12 @@ export default class Agents extends View {
     }
     this.adoptGit(live);
     const now = Date.now();
-    const due = places.filter(([key]) => {
+    const due = places.filter(([key, place]) => {
       const record = readGitRecord(key) ?? this.gitRecord(key);
       if (!record) return true;
       if (record.unsure && now - record.at < GIT_REFS_EVERY) return false;
-      return now - record.refsAt >= GIT_REFS_EVERY || now - record.dirtyAt >= GIT_DIRTY_EVERY;
-    });
+      return now - record.refsAt >= GIT_REFS_EVERY || now - record.dirtyAt >= (record.info ? place.dirtyEvery : GIT_DIRTY_EVERY);
+    }).sort(([, a], [, b]) => a.dirtyEvery - b.dirtyEvery);
     if (!due.length) return;
     this.gitBusy = true;
     cx.spawn(async (cx) => {
@@ -546,7 +552,8 @@ export default class Agents extends View {
   // One place's git: the shared look, and its answer on the row.
   async check(key, place, queued = null) {
     const prev = queued ?? readGitRecord(key) ?? this.gitRecord(key);
-    const walk = !this.gitAt[key] || Date.now() - (Number(prev?.dirtyAt) || 0) >= GIT_DIRTY_EVERY;
+    const dirtyEvery = prev?.info ? (place.dirtyEvery ?? GIT_DIRTY_EVERY) : GIT_DIRTY_EVERY;
+    const walk = !this.gitAt[key] || Date.now() - (Number(prev?.dirtyAt) || 0) >= dirtyEvery;
     const record = await checkGit(key, place, prev, { walk });
     if (!record) return; // a peer owns the first look; adoption will supply its answer
     this.gitRecords[key] = record;

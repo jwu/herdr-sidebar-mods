@@ -53,8 +53,9 @@ name (`Local` here), then flush right that place's branch `▸` remote and
 `↑n`/`↓n`, plus `*n` for files changed and `✘n` for conflicts, as on a space
 row. That line is budgeted the same way as a space row's: the machine
 keeps six glyphs before the tail gives up its share. The git tail shares its
-machine-and-folder cache with Spaces: refs refresh every 30s, worktree scans
-for dirty/conflict counts every 60s, with earlier refresh after a command ends.
+machine-and-folder cache with Spaces. Refs are due every 30s. Agents checks
+worktree counts every 15s for the current space and the agent being viewed,
+and every 60s for other spaces. Spaces can refresh counts sooner when a command ends.
 Each command runs over `exec` on the agent's own machine. Sub-agent
 rows are 26px, indented under tree lines. The selected agent row is the same
 magenta at 20%.
@@ -158,9 +159,10 @@ local scan ages even if evicted. Two separate `rev-parse` calls identify a repo
 without confusing newlines in paths; a full scan then uses
 `git --no-optional-locks -c core.fsmonitor=false status --porcelain=v2 --branch`.
 Between scans, `symbolic-ref`, upstream `rev-parse` and `rev-list` read refs
-without walking the worktree. Refs refresh every 30s, dirty/conflict counts every
-60s; a terminal's command ending, a folder move or a machine returning can scan
-sooner. Spaces checks up to six places, Agents two, with at most two execs per
+without walking the worktree. Refs are due every 30s. Dirty/conflict counts are
+due every 60s, or every 15s for the Agents panel's current space and the agent
+being viewed. Spaces can scan sooner after a terminal's command ends, a folder
+moves, or a machine returns. Spaces checks up to six places, Agents two, with at most two execs per
 place and 20-second exec timeouts. Local repo `watchFolder` events refresh refs
 immediately. Temporary failures retain the previous answer and back off; only
 an explicit not-a-repository answer clears it. While Herdr 0.1.18+ reports the

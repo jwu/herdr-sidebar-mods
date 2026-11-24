@@ -487,6 +487,32 @@ test("spaces keeps a watch on a repo the other panel answered for", async () => 
   assert.deepEqual(watched, ["/repo/.git"], "changes there reach this panel");
 });
 
+test("Agents refreshes worktree counts sooner in the current space and the agent being viewed", async () => {
+  const store = sharedStore();
+  const cwd = ["/current", "/background", "/peek"];
+  const keys = cwd.map(path => keyOf(null, path));
+  const at = now() - 16000;
+  store.seed(Object.fromEntries(keys.map(key => [key, record({ at, refsAt: at, dirtyAt: at })])));
+  const git = responds(Object.fromEntries(cwd.map(path => [path, {
+    status: { code: 0, stdout: "# branch.head main\n? new-file\n", stderr: "" },
+  }])));
+  const agents = panel("sidebar-agents", store, {
+    agents: () => [
+      { pane: "p0", address: "t0", space: "current" },
+      { pane: "p1", address: "t1", space: "background" },
+      { pane: "p2", address: "t2", space: "peek" },
+      { pane: "p0", address: "t3", space: "background" },
+    ],
+    panes: () => cwd.map((path, i) => ({ pane: `p${i}`, cwd: path })),
+    focused: () => ({ space: "current", terminal: "editor", shown: "t2" }),
+    exec: git.exec,
+  });
+  agents.instance.refreshGit(agents.context);
+  await agents.context.flush();
+  assert.equal(git.calls.filter(line => line.includes("status")).length, 2);
+  assert.deepEqual(keys.map(key => agents.instance.git[key].dirty), [1, 0, 1]);
+});
+
 test("the agents panel walks the worktree less often than it reads refs", async () => {
   const store = sharedStore();
   const key = keyOf(null, "/repo");
