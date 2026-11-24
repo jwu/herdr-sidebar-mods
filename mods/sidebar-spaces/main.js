@@ -507,7 +507,7 @@ const CUP_ALIVE = (pid) => `kill -0 ${pid} 2>/dev/null && ps -o comm= -p ${pid} 
 // machine's own shell. Linux counters are compared with the previous reading;
 // macOS has no such counters a shell can read, so `ps` sums what is running.
 // A machine without a POSIX shell (Windows) keeps the placeholders.
-const STAT_EVERY = 5000;
+const SAMPLE_EVERY = 5000;
 const CPU_WARN = 75;
 const MEM_WARN = 80;
 // A machine row's CPU sparkline: samples kept, bar width and gap, its height.
@@ -517,6 +517,8 @@ const BAR_GAP = 1;
 const GRAPH_H = 14;
 const METER_W = 36;
 const STAT_SCRIPT = [
+  "printf '[stats]\\n'",
+  '(',
   'os=$(uname -s 2>/dev/null) || exit 1',
   'echo "os $os"',
   'case "$os" in',
@@ -532,6 +534,7 @@ const STAT_SCRIPT = [
   '    ps -A -o %cpu=',
   '    ;;',
   'esac',
+  ") && printf '[/stats]\\n'",
 ].join("\n");
 const clamp = (v) => Math.min(100, Math.max(0, v));
 
@@ -542,9 +545,9 @@ const clamp = (v) => Math.min(100, Math.max(0, v));
 // it starts; a listener with neither (a system service, a container, anything
 // started outside Herdr) belongs to no space and is dropped. `L` is one
 // listening socket, `O` one owner a listener named.
-const PORT_EVERY = 5000;
-const PORT_TIMEOUT = 15000;
 const PORT_SCRIPT = [
+  "printf '[ports]\\n'",
+  '(',
   'for herdr_dir in /usr/sbin /sbin; do',
   '  case ":$PATH:" in',
   '    *":$herdr_dir:"*) ;;',
@@ -562,7 +565,7 @@ const PORT_SCRIPT = [
   '    }',
   "  }')",
   'elif command -v lsof >/dev/null 2>&1; then',
-  "  herdr_ports=$(lsof -nP -iTCP -sTCP:LISTEN -Fpcn 2>/dev/null | awk '",
+  `  herdr_ports=$(lsof -nP -a -u "$(id -u)" -iTCP -sTCP:LISTEN -Fpcn 2>/dev/null | awk '`,
   '    /^p/ { pid = substr($0, 2) }',
   "    /^n/ { print \"L\", pid, substr($0, 2) }')",
   'else',
@@ -581,6 +584,7 @@ const PORT_SCRIPT = [
   '  done',
   'done',
   'true',
+  ") && printf '[/ports]\\n'",
 ].join("\n");
 
 // A space speaks up only when something in it needs you.
@@ -633,11 +637,9 @@ export default class Spaces extends View {
     this.stats = {}; // machine -> { cpu, mem, cores }, percentages or null
     this.history = {}; // machine -> its last CPU shares, oldest first
     this.ticks = {}; // machine -> its last Linux CPU counters
-    this.statsAt = {}; // machine -> when it was last asked
+    this.sampleAt = {}; // machine -> when it was last asked
     this.sampling = new Set(); // machines a sample is in flight for
     this.ports = {}; // machine "" -> { space -> [{ number, address }] }
-    this.portAt = {}; // machine -> when its ports were last read
-    this.portScan = new Set(); // machines a port scan is in flight for
     try {
       this.reconnecting = JSON.parse(localStorage.getItem("machines.reconnecting") ?? "{}");
       if (!this.reconnecting || typeof this.reconnecting !== "object" || Array.isArray(this.reconnecting)) this.reconnecting = {};
@@ -683,8 +685,10 @@ export default class Spaces extends View {
       for (;;) {
         const command = String(await nextCommand());
         if (command === "settings") openSettings();
-        else if (command === "keep-awake") { if (this.cupHere) this.toggleCup(cx); }
-        else {
+        else if (command === "keep-awake") {
+          if (this.cupHere) this.toggleCup(cx);
+          else notify({ title: "Keep awake needs caffeinate (macOS)", level: "info" });
+        } else {
           const n = Number(command.replace(/^pick/, ""));
           if (n >= 1 && n <= 9) this.pick(n);
         }
@@ -704,8 +708,7 @@ export default class Spaces extends View {
     cx.timer.every(2000, cx => {
       if (!shown()) { this.hidden = true; return; }
       if (this.hidden) { this.hidden = false; this.refreshMachines(cx); }
-      this.refreshStats(cx);
-      this.refreshPorts(cx);
+      this.refreshSample(cx);
     });
     // `git status` walks the whole tree, on another machine a process there:
     // only when its answer could have changed (see `due`).
@@ -806,7 +809,7 @@ export default class Spaces extends View {
     cx.spawn(async cx => {
       try {
         const result = await hc(["machine", "ls", "--json"]);
-        if (result.code === 0) this.machines = JSON.parse(result.stdout).machines.filter(m => !m.temporary);
+        if (result.code === 0) this.machines = (JSON.parse(result.stdout).machines ?? []).filter(m => !m.temporary);
       } catch {}
       cx.notify();
     });
@@ -835,50 +838,33 @@ export default class Spaces extends View {
     });
   }
 
-  // Ask each connected machine for its load; a slow or away machine misses its
-  // turn without holding the others up.
-  refreshStats(cx) {
-    if (!enabled(SHOW_USAGE)) return;
+  // One look per connected machine. A slow machine skips its turn without
+  // holding up the others, and only a complete section replaces old data.
+  refreshSample(cx) {
+    const usage = enabled(SHOW_USAGE), ports = enabled(SHOW_PORTS);
+    if (!usage && !ports) return;
+    // Each section closes only on success. The shell can finish either one.
+    const script = [usage ? STAT_SCRIPT : "", ports ? PORT_SCRIPT : "", ":"].join("\n");
     const now = Date.now();
     for (const m of [null, ...this.machines.filter(k => k.state === "connected").map(k => k.name)]) {
       const key = m ?? "";
-      if (this.sampling.has(key) || now - (this.statsAt[key] ?? 0) < STAT_EVERY) continue;
-      this.statsAt[key] = now;
+      if (this.sampling.has(key) || now - (this.sampleAt[key] ?? 0) < SAMPLE_EVERY) continue;
+      this.sampleAt[key] = now;
       this.sampling.add(key);
       cx.spawn(async (cx) => {
+        let stats, listeners;
         try {
-          const r = await exec("sh", ["-c", STAT_SCRIPT], { on: m, timeout: 15000 });
-          if (r.code === 0) this.takeStats(key, r.stdout);
-          else if (this.stats[key]) this.stats[key].stale = true;
-        } catch {
-          if (this.stats[key]) this.stats[key].stale = true;
+          const r = await exec("sh", ["-c", script], { on: m, timeout: 15000 });
+          if (r.code === 0) {
+            if (usage) stats = /^\[stats\]\n([\s\S]*?)^\[\/stats\]$/m.exec(r.stdout)?.[1];
+            if (ports) listeners = /^\[ports\]\n([\s\S]*?)^\[\/ports\]$/m.exec(r.stdout)?.[1];
+          }
+        } catch {} finally {
+          this.sampling.delete(key);
         }
-        this.sampling.delete(key);
-        cx.notify();
-      });
-    }
-  }
-
-  // Each machine's listening ports, grouped by the space whose terminal
-  // started the server. One look at a time per machine, five seconds apart; a
-  // machine that is away keeps the ports it had.
-  refreshPorts(cx) {
-    if (!enabled(SHOW_PORTS)) return;
-    const now = Date.now();
-    for (const m of this.machineNames()) {
-      const key = m ?? "";
-      if (this.portScan.has(key) || now - (this.portAt[key] ?? 0) < PORT_EVERY) continue;
-      if (m && !this.machines.some(k => k.name === m && k.state === "connected")) continue;
-      this.portAt[key] = now;
-      this.portScan.add(key);
-      cx.spawn(async (cx) => {
-        let out = null;
-        try {
-          const r = await exec("sh", ["-c", PORT_SCRIPT], { on: m, timeout: PORT_TIMEOUT });
-          if (r.code === 0) out = r.stdout;
-        } catch {}
-        if (out != null) this.takePorts(key, out);
-        this.portScan.delete(key);
+        if (stats != null) this.takeStats(key, stats);
+        else if (usage && this.stats[key]) this.stats[key].stale = true;
+        if (listeners != null) this.takePorts(key, listeners);
         cx.notify();
       });
     }

@@ -114,10 +114,11 @@ with sub-agents of a plain terminal counted under it.
 
 Both `mod.json` files add command palette entries (Herdr 0.1.18+, older Herdr
 ignores the key): `sidebar-spaces.settings` opens Sidebar Settings,
-`sidebar-spaces.keep-awake` toggles the cup where `caffeinate` exists, and
-`sidebar-agents.sort-priority` / `sort-grouped` set `agents.sort`. Each panel
-reads them with `nextCommand()`, so they reach only a shown copy, and the
-palette accepts them only while the folder names match the mods'.
+`sidebar-spaces.keep-awake` toggles the cup where `caffeinate` exists and shows
+an info notification otherwise. `sidebar-agents.sort-priority` / `sort-grouped`
+set `agents.sort`. Each panel reads them with `nextCommand()`, so they reach
+only a shown copy, and the palette accepts them only while the folder names
+match the mods'.
 
 The Spaces scroll area tracks a `ScrollHandle`: selecting a different space,
 changing its displayed index or resizing the list brings the active row into
@@ -147,9 +148,11 @@ From `gpui-kit`: `View`, `div`, `image`, `svg`; from `gpui-base`: `h_flex`,
 `terminal.pin`, `agent.focus`. Drawings use the shipped `workspace-chrome` mod's
 SVGs (`monitor`, `server`, `folder`, `branch`, `git-branch`, `chevron-down`,
 `chevron-right`, `plus`, `spinner`, `pin`, `pin-off`, `clock`, `layers`,
-`check`) and the shipped `menu` mod for the space context menu. Machine load is
-sampled every 5s with `exec("sh", ["-c", …], {on: machine})`: Linux reads
-`/proc/stat` and `/proc/meminfo` (`MemAvailable`, else `MemFree`), macOS reads
+`check`) and the shipped `menu` mod for the space context menu. Each connected
+machine gets one `exec("sh", ["-c", …], {on: machine})` for load and listening
+ports, at least 5s apart. It runs whichever probes are enabled in Sidebar Settings
+and skips the call when both are off. For load, Linux reads `/proc/stat` and
+`/proc/meminfo` (`MemAvailable`, else `MemFree`), macOS reads
 `vm_stat`, `hw.memsize` and sums `ps -A -o %cpu=`, and MINGW/MSYS machines use
 the Linux path. The machine list is `hc machine ls --json` every 15s. Both
 panels share Git results in `shared("sidebar.git.v1")`, keyed by machine and
@@ -173,11 +176,11 @@ shows; back in view, the machine list is asked at once. Older Herdr has no
 flag, so only an explicit `false` pauses. Leaving a place drops its local
 Git cache; a local repository no longer shown has its pending watch cancelled,
 and cancellation never restarts the watch. Space colors
-under `space.colors` stay maintained for the space picker. Listening ports are
-read the way Sheprd reads its sidebar: every 5s each connected machine runs
-`ss -ltnp` (else `lsof -nP -iTCP -sTCP:LISTEN`) in its own shell, and each
-listening pid's environment names where it was started — `HC_TERMINAL_ID` from
-herdr-core, `HERDR_WORKSPACE_ID` from a Herdr pane — which `panes()` and
+under `space.colors` stay maintained for the space picker. The listening-port
+probe runs `ss -ltnp` or falls back to
+`lsof -nP -a -u "$(id -u)" -iTCP -sTCP:LISTEN -Fpcn` for the current user's
+processes. Each listening pid's environment names where it was started —
+`HC_TERMINAL_ID` from herdr-core, `HERDR_WORKSPACE_ID` from a Herdr pane — which `panes()` and
 `spaces()` resolve to a space through the pane's tab. A listener that names
 neither is dropped rather than guessed at from a process tree or a working
 folder.

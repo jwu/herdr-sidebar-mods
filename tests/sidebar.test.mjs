@@ -349,6 +349,31 @@ test("Spaces machine folds leave manual scrolling alone", () => {
   assert.deepEqual(instance.scroll.items, [3, 3, 1]);
 });
 
+test("Agents reuses trees within a render and rebuilds them when terminals change", () => {
+  let state = "live";
+  const { instance, context } = init("sidebar-agents", {
+    agents: () => [{ address: "t1", status: "idle", seq: 1 }],
+    terminals: () => [
+      { address: "t2", parent: "t1", state, status: "working" },
+      { address: "t3", parent: "t1", state: "live", status: "idle" },
+    ],
+  });
+  assert.ok(byId(instance.render(context), "sub-t2"));
+  const first = instance.tree("t1");
+  assert.equal(instance.tree("t1"), first);
+  assert.equal(first[1].lines[0], "└");
+  assert.equal(first[0].lines[0], "├");
+
+  state = "finished";
+  const root = instance.render(context);
+  assert.equal(byId(root, "sub-t2"), undefined);
+  assert.ok(byId(root, "sub-t3"));
+  const next = instance.tree("t1");
+  assert.notEqual(next, first);
+  assert.equal(next.length, 1);
+  assert.equal(next[0].lines[0], "└");
+});
+
 test("Agents shows a plain terminal as the parent of a reporting child agent", () => {
   const calls = [];
   const attached = { address: "t1", pane: "p1", space: "home", tab: "tab", status: "idle", seq: 1 };
@@ -586,6 +611,14 @@ test("machine Clear only removes finished records from the selected machine", as
   assert.equal(textOf(byId(instance.render(context), "machine-clear-vps")), "0");
 });
 
+test("Spaces clears the machine list when a successful response omits machines", async () => {
+  const { instance, context, herdr } = spacePanel();
+  herdr.hc = async () => ({ code: 0, stdout: "{}", stderr: "" });
+  instance.refreshMachines(context);
+  await context.flush();
+  assert.equal(instance.machines.length, 0);
+});
+
 test("the trash count refreshes when a terminal leaves the live snapshot", async () => {
   const { instance, context, herdr } = spacePanel();
   let terms = [{ address: "t1", state: "live" }, { address: "t2", state: "live" }];
@@ -676,7 +709,7 @@ test("polls pause while the window is out of sight and resume when it shows", as
   const loaded = loadMod("sidebar-spaces", {
     checking: () => false,
     window: () => ({ platform: "macos", active: false, visible }),
-    exec: async (cmd, args) => { calls.push(["exec", args?.[1]?.slice(0, 20)]); return { code: 1, stdout: "", stderr: "" }; },
+    exec: async () => { calls.push(["exec"]); return { code: 1, stdout: "", stderr: "" }; },
     hc: async args => { calls.push(["hc", ...args]); return { code: 1, stdout: "", stderr: "" }; },
   });
   const instance = new loaded.Class();
@@ -693,6 +726,7 @@ test("polls pause while the window is out of sight and resume when it shows", as
   await every(250).fn(loaded.context);
   await loaded.context.flush();
   assert.ok(calls.some(c => c[0] === "hc" && c[1] === "machine"), "machines are asked again on return");
+  assert.equal(calls.filter(c => c[0] === "exec").length, 1, "sampling resumes with one call for Local");
   assert.ok(calls.some(c => c[0] === "checkNew"));
 
   // Herdr without the flag keeps polling.
@@ -703,6 +737,109 @@ test("polls pause while the window is out of sight and resume when it shows", as
   agents.refreshGit = () => refreshed++;
   await old.context.timers.find(t => t.ms === 5000).fn(old.context);
   assert.equal(refreshed, 1);
+});
+
+test("Spaces samples load and ports once per connected machine per tick", async () => {
+  let now = 10_000;
+  const calls = [];
+  const pending = makeDeferred();
+  const loaded = init("sidebar-spaces", {
+    checking: () => false,
+    spaces: () => spaces.map(s => ({ ...s, tabs: [{ id: `${s.id}-tab` }] })),
+    panes: () => [{ tab: "local-tab", terminal: "t1" }, { tab: "remote-tab", terminal: "vps/t1" }],
+  });
+  const { instance, context, herdr } = loaded;
+  await context.flush();
+  loaded.vm.Date = { now: () => now };
+  instance.machines.push({ name: "vps", state: "connected" }, { name: "away", state: "offline" });
+  herdr.exec = async (cmd, [flag, script], { on, timeout }) => {
+    calls.push([cmd, flag, on, timeout]);
+    assert.match(script, /\[stats\]/);
+    assert.match(script, /\[ports\]/);
+    assert.ok(script.includes('lsof -nP -a -u "$(id -u)" -iTCP -sTCP:LISTEN -Fpcn'));
+    return pending.promise;
+  };
+  const tick = () => context.timers.find(t => t.ms === 2000).fn(context);
+  const expected = [["sh", "-c", null, 15000], ["sh", "-c", "vps", 15000]];
+  tick();
+  await Promise.resolve();
+  assert.deepEqual(calls, expected);
+  now += 5000;
+  tick();
+  await Promise.resolve();
+  assert.deepEqual(calls, expected, "a pending sample blocks another call on its machine");
+
+  pending.resolve({ code: 0, stdout: [
+    "[stats]", "os Darwin", "cores 4", "memsize 81920",
+    "Mach Virtual Memory Statistics: (page size of 4096 bytes)", "Pages active: 10.",
+    "60.0", "20.0", "[/stats]", "[ports]", "L 501 127.0.0.1:3000",
+    "O 501 HC_TERMINAL_ID t1", "[/ports]", "",
+  ].join("\n") });
+  await context.flush();
+  for (const [key, space] of [["", "local"], ["vps", "remote"]]) {
+    const { cpu, mem, cores, stale } = instance.stats[key];
+    assert.deepEqual([cpu, mem, cores, stale], [20, 50, 4, false]);
+    const [{ number, address }] = instance.ports[key][space];
+    assert.deepEqual([number, address], [3000, "127.0.0.1:3000"]);
+  }
+  tick();
+  await context.flush();
+  assert.deepEqual(calls, [...expected, ...expected]);
+  tick();
+  await context.flush();
+  assert.deepEqual(calls, [...expected, ...expected], "a completed sample is throttled until the next interval");
+});
+
+test("Spaces samples enabled sections and keeps old readings on failure", async () => {
+  const settings = new Map();
+  const scripts = [];
+  let result;
+  const { instance, context } = init("sidebar-spaces", {
+    shared: key => settings.get(key),
+    exec: async (_cmd, [_flag, script]) => {
+      scripts.push(script);
+      if (result instanceof Error) throw result;
+      return result;
+    },
+  });
+  const sample = async () => {
+    instance.sampleAt = {};
+    instance.refreshSample(context);
+    await context.flush();
+  };
+  settings.set("sidebar.spaces.showUsage", false);
+  settings.set("sidebar.spaces.showPorts", false);
+  await sample();
+  assert.deepEqual(scripts, []);
+
+  const priorStats = { stale: false };
+  const priorPorts = { local: [{ number: 9000 }] };
+  instance.stats[""] = priorStats;
+  instance.ports[""] = priorPorts;
+  settings.set("sidebar.spaces.showUsage", true);
+  result = { code: 1, stdout: "" };
+  await sample();
+  assert.match(scripts.at(-1), /\[stats\]/);
+  assert.doesNotMatch(scripts.at(-1), /\[ports\]/);
+  assert.equal(priorStats.stale, true);
+  assert.equal(instance.stats[""], priorStats);
+  assert.equal(instance.ports[""], priorPorts);
+
+  priorStats.stale = false;
+  settings.set("sidebar.spaces.showUsage", false);
+  settings.set("sidebar.spaces.showPorts", true);
+  result = new Error("exec timed out");
+  await sample();
+  assert.doesNotMatch(scripts.at(-1), /\[stats\]/);
+  assert.match(scripts.at(-1), /\[ports\]/);
+  assert.equal(priorStats.stale, false);
+  assert.equal(instance.ports[""], priorPorts);
+
+  settings.set("sidebar.spaces.showUsage", true);
+  result = { code: 0, stdout: "[stats]\nos Darwin\n[ports]\n[/ports]\n" };
+  await sample();
+  assert.equal(priorStats.stale, true, "an incomplete usage section keeps the last reading");
+  assert.equal(Object.keys(instance.ports[""]).length, 0, "a complete empty port section clears old listeners");
 });
 
 test("Spaces defers repository watch events while hidden", async () => {
@@ -768,9 +905,10 @@ test("palette commands reach the panels", async () => {
     let i = 0;
     return () => i < commands.length ? Promise.resolve(commands[i++]) : new Promise(() => {});
   };
-  const overlays = [];
+  const overlays = [], toasts = [];
   const spacesPanel = loadMod("sidebar-spaces", {
     checking: () => false, nextCommand: queue(["settings", "keep-awake"]), openOverlay: spec => overlays.push(spec),
+    notify: toast => toasts.push(toast),
   });
   const s = new spacesPanel.Class();
   let cups = 0;
@@ -779,6 +917,9 @@ test("palette commands reach the panels", async () => {
   await flushTurns();
   assert.equal(JSON.stringify(overlays.map(o => o.props)), JSON.stringify([{ sidebarSettings: true }]));
   assert.equal(cups, 0, "no cup where caffeinate is missing");
+  assert.equal(toasts.length, 1);
+  assert.equal(toasts[0].title, "Keep awake needs caffeinate (macOS)");
+  assert.equal(toasts[0].level, "info");
 
   const sorts = [];
   const agentsPanel = loadMod("sidebar-agents", {
