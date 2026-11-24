@@ -58,7 +58,8 @@ worktree counts every 15s for the current space and the agent being viewed,
 and every 60s for other spaces. Spaces can refresh counts sooner when a command ends.
 Each command runs over `exec` on the agent's own machine. Sub-agent
 rows are 26px, indented under tree lines. The selected agent row is the same
-magenta at 20%.
+magenta at 20%. When the current layout has no `sidebar-spaces` block, a
+gear beside the sort button opens Sidebar Settings from Agents.
 
 Under a space row, when any of its terminals is listening, sits its ports line:
 18px tall, 10.5px type in the theme's blue, indented to where the space's
@@ -105,9 +106,9 @@ the mod's shared state `agents.sort`), and pin an agent with the pin button
 that appears on hover (`terminal.pin`). On macOS the Agents panel sets the Dock
 badge to the number of listed agents whose actual state is blocked or done,
 counted before grouping or folding (not the parent's promoted urgency). It writes
-only when the count changes, clears at zero and on panel close, and never lets
-the sort overlay own the badge. Other badge-setting mods share the same
-last-writer-wins API. The Agents panel passes its rows to `setAgentOrder`, so
+only when the count changes and clears at zero and on panel close. The sort
+and settings overlays leave the badge alone. Other badge-setting mods share the
+same last-writer-wins API. The Agents panel passes its rows to `setAgentOrder`, so
 `agent.next`, `agent.prev` and, on Herdr 0.1.18+, `agent.select {index}`
 follow the order the panel shows: pinned first, sorted or grouped as shown,
 with sub-agents of a plain terminal counted under it.
@@ -133,10 +134,27 @@ A remote machine that needs login offers its
 instead. A `keeps_running_after_logout: false` machine shows the shipped logout
 warning and opens the official machine-add dialog for the fix (core 0.1.21+).
 
-**Built from:** two mods, `sidebar-spaces` and `sidebar-agents`, each with a
-`main.js` and a `mod.json` (`{"place":"none","title":"Spaces"|"Agents","palette":[…]}`). Both
-import from `herdr`: `spaces`, `machines`, `panes`, `agents`, `terminals`,
-`focused`, `theme`, `shared`, `setShared`, `layout`, `window`, `run`, `exec`,
+**Built from**
+
+- `sidebar-spaces` uses `main.js` for the Spaces view and polling state,
+  `probe.js` for the combined machine load and port script and its parsers,
+  and `cup.js` for the keep-awake commands and PID file. `mod.json` declares the
+  panel and palette entries. `coffee.svg`, `coffee-full.svg`, `keep.svg`,
+  `trash.svg`, and `unplug.svg` supply its local icons.
+- `sidebar-agents` uses `main.js` for agent rows, navigation, sorting, Git
+  scheduling, and the Dock badge. `mod.json` declares the panel and its sort
+  palette entries. `keep.svg` supplies the keep-as-tab icon.
+- Both sidebar folders carry identical copies of `shared.js` for the Git
+  cache, row helpers, and settings keys, and `settings.js` for the settings
+  dialog and gear. Each panel loads its own copies.
+- The optional `pane-header` uses `main.js` for pane labels, status, and
+  controls, `mod.json` for the mod declaration, and `close.svg`, `send-back.svg`,
+  `split-down.svg`, `split-right.svg`, `zoom.svg`, and `unzoom.svg` for controls.
+- Each folder also has `jsconfig.json` and `gpui-kit.d.ts` for editor support.
+
+The sidebars use `herdr` functions including `spaces`, `machines`, `panes`,
+`agents`, `terminals`, `focused`, `theme`, `shared`, `setShared`, `layout`,
+`window`, `run`, `exec`,
 `hc`, `openOverlay`, `closeOverlay`, `props`, `watchFolder`, `setAgentOrder`,
 `checking`, `setBadge`, `notify`, `nextCommand`. Messages (Clear results,
 a copied remote port, a keep without a space) go through `notify`; herdr's
@@ -148,8 +166,8 @@ From `gpui-kit`: `View`, `div`, `image`, `svg`; from `gpui-base`: `h_flex`,
 `terminal.pin`, `agent.focus`. Drawings use the shipped `workspace-chrome` mod's
 SVGs (`monitor`, `server`, `folder`, `branch`, `git-branch`, `chevron-down`,
 `chevron-right`, `plus`, `spinner`, `pin`, `pin-off`, `clock`, `layers`,
-`check`) and the shipped `menu` mod for the space context menu. Each connected
-machine gets one `exec("sh", ["-c", …], {on: machine})` for load and listening
+`check`, `settings`) and the shipped `menu` mod for the space context menu.
+Each connected machine gets one `exec("sh", ["-c", …], {on: machine})` for load and listening
 ports, at least 5s apart. It runs whichever probes are enabled in Sidebar Settings
 and skips the call when both are off. For load, Linux reads `/proc/stat` and
 `/proc/meminfo` (`MemAvailable`, else `MemFree`), macOS reads
@@ -199,10 +217,10 @@ Both mods assume the layout's sidebar node keeps `"id":
 "sidebar"` — they read its width for the compact fallbacks, and without it the
 width reads as infinite (always full detail). They also reach into the shipped
 `workspace-chrome` mod for icons, so a renamed or removed icon path breaks
-silently. The agents mod opens its own sort overlay, so the folder name
-(`sidebar-agents`) must match the `mod` name passed to `openOverlay`, or the
-clock button does nothing. CPU is a delta over two samples, so a machine shows
-`—` for its first five seconds; macOS CPU is `ps`'s per-process percentage
+silently. The agents mod opens its own sort and settings overlays, so the
+folder name (`sidebar-agents`) must match the `mod` name passed to `openOverlay`.
+CPU is a delta over two samples, so a machine shows `—` for its first five
+seconds; macOS CPU is `ps`'s per-process percentage
 summed and divided by the core count, an approximation, and Windows memory is
 `MemTotal - MemFree`, so it reads higher than Task Manager. Windows without a
 POSIX shell gets `—` for both. The machine band is deliberately full-bleed and

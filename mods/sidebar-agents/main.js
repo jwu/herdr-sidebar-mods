@@ -10,6 +10,9 @@ import {
   AGENT_SORT, EXPAND_CHILDREN, SHOW_GIT_BRANCH, SHOW_GIT_CHANGES, SHOW_GIT_SYNC, enabled, statusAtStart,
   GIT_DIRTY_EVERY, GIT_REFS_EVERY, gitKey, checkGit, readGitStore, gitRecordOf, writeGitStore,
 } from "./shared.js";
+import { settingsButton, settingsDialog } from "./settings.js";
+
+const openSettings = () => openOverlay({ mod: "sidebar-agents", kind: "dialog", width: 510, height: 590, props: { sidebarSettings: true } });
 
 const AGENT_PADDING = 8;
 const AGENT_GAP = 8;
@@ -87,7 +90,8 @@ function icon(p, size, color) {
 
 export default class Agents extends View {
   init(_props, cx) {
-    if (props()?.sortMenu) return;
+    const view = props();
+    if (view?.sortMenu || view?.sidebarSettings) return;
     this.folded = new Set();
     this.openChildren = new Map();
     this.hoveredChild = null;
@@ -464,7 +468,9 @@ export default class Agents extends View {
 
   render(cx) {
     const t = theme();
-    if (props()?.sortMenu) return this.sortMenu(t);
+    const view = props();
+    if (view?.sortMenu) return this.sortMenu(t);
+    if (view?.sidebarSettings) return settingsDialog(t, view.overlay);
     const collapsed = narrow();
     const leading = statusAtStart();
     const expandChildren = enabled(EXPAND_CHILDREN);
@@ -806,16 +812,17 @@ export default class Agents extends View {
             .items_center()
             .justify_between()
             .child(div().text_size(11.5).font_medium().text_color(t.dim).child("Agents"))
-            .child(
-              div()
+            .child(h_flex().items_center().gap(4)
+              .when(!find(layout(), node => node.content?.mod === "sidebar-spaces"), el =>
+                el.child(settingsButton(t, openSettings)))
+              .child(div()
                 .id("ag-sort")
                 .text_size(11)
                 .text_color(t.dim)
                 .hover((s) => s.text_color(t.foreground))
                 .on_click(() => openOverlay({ mod: "sidebar-agents", kind: "popup", width: 200, height: 140, props: { sortMenu: true } }))
                 .tooltip(`Sort agents: ${sort.label}`)
-                .child(svg(`mods/workspace-chrome/${sort.icon}.svg`).size(14)),
-            ),
+                .child(svg(`mods/workspace-chrome/${sort.icon}.svg`).size(14)))),
         ),
       )
       .when(list.length === 0 && !collapsed, (el) =>
