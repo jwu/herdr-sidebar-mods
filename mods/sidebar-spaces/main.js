@@ -7,25 +7,16 @@
 import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
 import * as fs from "fs/promises";
-import { spaces, machines, panes, terminals, focused, run, openOverlay, closeOverlay, props, exec, hc, appHome, theme, shared, setShared, watchFolder, window, layout, nextCommand, checking, notify } from "herdr";
-
-// Whether the platform presents the window (Herdr 0.1.18+). Older Herdr has no
-// flag, so only an explicit false pauses the polls.
-const shown = () => window()?.visible !== false;
+import { spaces, machines, panes, terminals, focused, run, openOverlay, closeOverlay, props, exec, hc, appHome, theme, shared, setShared, watchFolder, window, nextCommand, checking, notify } from "herdr";
+import {
+  sidebarPx, narrow, shown, GLYPH, SEG_GAP, SCROLL_GUTTER, fit, segmentBudgets,
+  TREE_STROKE_WIDTH, treeLines, machineOf, keepTerminal, viewedTerminalStatuses, mark,
+  STATUS_POSITION_KEY, SHOW_USAGE, SHOW_PORTS, SHOW_CUP, EXPAND_TERMINALS,
+  SHOW_GIT_BRANCH, SHOW_GIT_CHANGES, SHOW_GIT_SYNC, EXPAND_CHILDREN, AGENT_SORT, enabled, statusAtStart,
+  GIT_DIRTY_EVERY, GIT_REFS_EVERY, gitKey, checkGit, latestGitRecord, readGitStore, gitRecordOf, writeGitStore,
+} from "./shared.js";
 
 const openSettings = () => openOverlay({ mod: "sidebar-spaces", kind: "dialog", width: 510, height: 590, props: { sidebarSettings: true } });
-
-function find(node, id) {
-  if (node?.id === id) return node;
-  for (const child of node?.children ?? []) {
-    const found = find(child, id);
-    if (found) return found;
-  }
-  return null;
-}
-
-// The sidebar's rail goes by its width, not a flag: dragging its edge narrows it too.
-const narrow = () => (find(layout(), "sidebar")?.size?.px ?? Infinity) < 160;
 
 // Where a space is now: its first terminal's live folder, else where it was made.
 // `ps`: panes(), read once by the caller (each read copies every pane).
@@ -41,103 +32,18 @@ const SPACE_STATUS_WIDTH = 16;
 const SPACE_ICON_WIDTH = 20;
 const FOLDER_WIDTH = 16;
 const BRANCH_WIDTH = 13;
-const TREE_STROKE_WIDTH = 1.5;
-const TREE_COLUMN_WIDTH = 13;
 const PORT_ROW_HEIGHT = 18;
 
 const SPACE_TREE_INSET = SPACE_PADDING + (SPACE_ICON_WIDTH - TREE_STROKE_WIDTH) / 2;
-const STATUS_POSITION_KEY = "sidebar.statusPosition";
-const SHOW_USAGE = "sidebar.spaces.showUsage";
-const SHOW_PORTS = "sidebar.spaces.showPorts";
-const SHOW_CUP = "sidebar.spaces.showCup";
-const EXPAND_TERMINALS = "sidebar.spaces.expandTerminals";
-const SHOW_GIT_BRANCH = "sidebar.git.showBranch";
-const SHOW_GIT_CHANGES = "sidebar.git.showChanges";
-const SHOW_GIT_SYNC = "sidebar.git.showSync";
-const enabled = key => shared(key) !== false;
-const statusAtStart = () => shared(STATUS_POSITION_KEY) === "start";
 const statusOffset = () => statusAtStart() ? SPACE_STATUS_WIDTH + SPACE_GAP : 0;
 
 function statusCell(status, t) {
   return div().w(SPACE_STATUS_WIDTH).flex_none().flex().justify_center()
     .when(Boolean(status), el => el.child(mark(status, t)));
 }
-// A row shares one line between its name and its git tail: every segment keeps
-// one glyph, then they grow in turn until the line is full, so a long name
-// cannot crowd the branch out. Sheprd budgets its sidebar labels the same way.
-const GLYPH = 8;
-const fit = (text, glyphs) => (text.length <= glyphs ? text : `${text.slice(0, Math.max(0, glyphs - 1))}\u2026`);
-// The tail is cut to its budget and then sized by its own text, so it ends at
-// the row's right edge instead of at the end of a wider measured cell.
-const SEG_GAP = 6;
-function segmentBudgets(lengths, available) {
-  const budgets = lengths.map((n) => (n > 0 ? 1 : 0));
-  let left = available - budgets.reduce((a, b) => a + b, 0);
-  while (left > 0) {
-    let grew = false;
-    for (let i = 0; i < budgets.length; i++) {
-      if (budgets[i] > 0 && budgets[i] < lengths[i]) {
-        budgets[i]++;
-        left--;
-        grew = true;
-        if (left === 0) break;
-      }
-    }
-    if (!grew) break;
-  }
-  return budgets;
-}
 const RAIL_CELL = 32;
-// How far the bar's lane reaches in from the right edge (it is 6pt wide, drawn
-// 4.5pt in): header controls, selection boxes and empty rows stop exactly where
-// it starts, so nothing sits under it and nothing leaves a visible gap.
-const SCROLL_GUTTER = 11;
 const railCell = (el) => h_flex().flex_none().justify_center().child(el);
-const where = (s, ps) => JSON.stringify([s.machine ?? null, place(s, ps)]);
-
-// A kept terminal needs a space on its own machine. Match the built-in Peek.
-function keepTerminal(address) {
-  const slash = address.indexOf("/");
-  const machine = slash < 0 ? null : address.slice(0, slash);
-  const there = spaces().filter(s => (s.machine ?? null) === machine);
-  if (!there.length) {
-    notify({ title: "No space on this terminal's machine", level: "error" });
-    return;
-  }
-  if (!there.some(s => s.active)) {
-    const byAddress = new Map(terminals().map(term => [term.address, term]));
-    const tabByTerminal = new Map(panes().map(p => [p.terminal, p.tab]));
-    const seen = new Set([address]);
-    let parent = byAddress.get(address)?.parent;
-    let target;
-    while (parent && !seen.has(parent) && !target) {
-      seen.add(parent);
-      const tab = tabByTerminal.get(parent);
-      target = there.find(s => s.tabs.some(t => t.id === tab));
-      parent = byAddress.get(parent)?.parent;
-    }
-    run("space.select", { id: (target ?? there[0]).id });
-  }
-  run("terminal.keep", { terminal: address, place: "tab" });
-}
-
-// A peek does not clear the core's Done report. Remember the viewed turn
-// across both panels and let the next turn display Done again.
-function viewedTerminalStatuses(all, shown) {
-  const key = "sidebar.viewedTerminalTurns";
-  const viewed = shared(key) ?? {};
-  const turnOf = term => term.turn ?? term.status_ms;
-  const current = all.find(term => term.address === shown && term.state === "live" && term.status === "done");
-  const turn = current && turnOf(current);
-  if (turn != null && viewed[shown] !== turn && !checking()) {
-    const seen = Object.fromEntries(all.filter(term => term.state === "live" && term.status === "done" &&
-      turnOf(term) != null && viewed[term.address] === turnOf(term)).map(term => [term.address, turnOf(term)]));
-    setShared(key, { ...seen, [shown]: turn });
-  }
-  return all.map(term => term.state === "live" && term.status === "done" &&
-    (term === current || (turnOf(term) != null && viewed[term.address] === turnOf(term)))
-    ? { ...term, status: "idle" } : term);
-}
+const where = (s, ps) => gitKey(s.machine, place(s, ps));
 
 function terminalGroups(sp, ps, all) {
   const spaceOfTab = new Map(sp.flatMap(s => (s.tabs ?? []).map(tab => [tab.id, s.id])));
@@ -157,28 +63,11 @@ function terminalGroups(sp, ps, all) {
       parent = byAddress.get(parent)?.parent;
     }
     const groups = space ? bySpace : byMachine;
-    const key = space ?? machineOfTerminal(term.address);
+    const key = space ?? machineOf(term.address);
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(term);
   }
   return { bySpace, byMachine };
-}
-
-function machineOfTerminal(address) {
-  const slash = address.indexOf("/");
-  return slash < 0 ? null : address.slice(0, slash);
-}
-
-// Rows in both sidebars use 26px cells with 1px margins. Extend each
-// vertical stroke into those margins so adjacent rows meet.
-function treeLines(lines, t) {
-  const color = t.dim;
-  return lines.map(line => div().relative().w(9).h(26).mr(TREE_COLUMN_WIDTH - 9).flex_none()
-    .when(Boolean(line), el => el.child(div().absolute().left(0).top(-1).w_full()
-      .border_l(TREE_STROKE_WIDTH).border_color(color)
-      .when(line === "└", stroke => stroke.h(15).border_b(TREE_STROKE_WIDTH).rounded_bl(5))
-      .when(line !== "└", stroke => stroke.bottom(-1))))
-    .when(line === "├", el => el.child(div().absolute().left(TREE_STROKE_WIDTH).right(0).top(12.5).h(TREE_STROKE_WIDTH).bg(color))));
 }
 
 function terminalTree(terms) {
@@ -203,199 +92,6 @@ function terminalTree(terms) {
   for (const term of terms) visit(term, [], true); // Keep any cyclic parent links reachable.
   return rows;
 }
-
-// --- shared git cache: keep this block identical in both sidebar mods ---
-// Spaces and Agents share their answers for places they both show. A place is
-// (machine, live folder), so two machines' /repo never mix. A look can walk the
-// worktree for changed files or read only refs, which is cheaper. Unused entries
-// expire and the store stays bounded.
-const GIT_CACHE = "sidebar.git.v1";
-const GIT_REFS_EVERY = 30000; // how stale branch, upstream and ahead/behind may get
-const GIT_DIRTY_EVERY = 60000; // how stale the worktree's changed files may get
-const GIT_STALE = 900000; // a place not looked at for a quarter of an hour is dropped
-const GIT_MAX = 64; // places kept in shared state
-const GIT_TIMEOUT = 20000; // one look at a place, then ask again later
-
-// Runs finished, not returned as they finish: a look is not over while one of
-// its runs still holds an exec slot, and a failure waits for its peers.
-async function allSettledValues(...runs) {
-  const done = await Promise.allSettled(runs);
-  const failed = done.find((d) => d.status === "rejected");
-  if (failed) throw failed.reason;
-  return done.map((d) => d.value);
-}
-
-// The store as read: a damaged or absent value is an empty one.
-function readGitStore() {
-  const places = shared(GIT_CACHE)?.places;
-  return places && typeof places === "object" && !Array.isArray(places) ? places : {};
-}
-
-// One place's record, if it is one this panel can use: another copy's damaged
-// write is not this panel's answer.
-function gitRecordOf(r) {
-  if (!r || typeof r !== "object" || !Number.isFinite(r.at) || r.at <= 0) return null;
-  if (Date.now() - r.at > GIT_STALE) return null;
-  let info = r.info;
-  if (info !== null) {
-    const g = info;
-    if (!g || typeof g !== "object" || Array.isArray(g) || typeof g.name !== "string"
-      || (g.branch !== null && typeof g.branch !== "string")
-      || (g.upstream !== null && typeof g.upstream !== "string")
-      || !["ahead", "behind", "dirty", "conflicts"].every(k => Number.isFinite(g[k]) && g[k] >= 0)) return null;
-    try {
-      const repo = JSON.parse(g.repo);
-      if (!Array.isArray(repo) || repo.length !== 2 || (repo[0] !== null && typeof repo[0] !== "string") || typeof repo[1] !== "string") return null;
-      if (g.name === ".bare" && repo[1].endsWith("/.bare")) info = { ...g, name: gitRepoName(repo[1]) };
-    } catch { return null; }
-  }
-  return {
-    at: r.at,
-    refsAt: Number.isFinite(r.refsAt) ? r.refsAt : 0,
-    dirtyAt: Number.isFinite(r.dirtyAt) ? r.dirtyAt : 0,
-    info: info ?? null,
-    unsure: r.unsure === true,
-  };
-}
-
-function latestGitRecord(key, local) {
-  const peer = gitRecordOf(readGitStore()[key]);
-  return peer && peer.at > (local?.at ?? 0) ? peer : local;
-}
-
-// Publish a pool's answers together, keeping anything newer that arrived while
-// it ran. Places nobody looked at for a while go.
-function writeGitStore(results) {
-  if (checking() || !results.size) return;
-  const places = { ...readGitStore() };
-  let changed = false;
-  for (const [key, record] of results) {
-    if ((gitRecordOf(places[key])?.at ?? 0) > record.at) continue;
-    places[key] = record;
-    changed = true;
-  }
-  if (!changed) return;
-  const now = Date.now();
-  const kept = {};
-  for (const [k, r] of Object.entries(places)) {
-    if (!r || typeof r !== "object" || !Number.isFinite(r.at) || now - r.at > GIT_STALE) continue;
-    kept[k] = r;
-  }
-  const newest = Object.entries(kept).sort((a, b) => b[1].at - a[1].at).slice(0, GIT_MAX);
-  setShared(GIT_CACHE, { places: Object.fromEntries(newest) });
-}
-
-// The repo's own name: its .git folder names it, and a worktree's top differs.
-function gitRepoName(repo) {
-  const last = (path) => path.replace(/\/+$/, "").split("/").pop();
-  if (repo.endsWith("/.git")) return last(repo.slice(0, -5));
-  if (repo.endsWith("/.bare")) return last(repo.slice(0, -6)) || ".bare";
-  return last(repo).replace(/\.git$/, "");
-}
-
-// A `status --porcelain=v2 --branch` answer: branch, upstream, ahead/behind and
-// the worktree's work — `1`/`2` changed or renamed, `?` untracked, `u` a conflict.
-function gitBranchInfo(stdout) {
-  const info = { branch: null, upstream: null, ahead: 0, behind: 0, dirty: 0, conflicts: 0 };
-  for (const line of stdout.split("\n")) {
-    if (line.startsWith("# branch.head ")) info.branch = line.slice(14);
-    else if (line.startsWith("# branch.upstream ")) info.upstream = line.slice(18);
-    else if (line.startsWith("# branch.ab ")) {
-      const [a, b] = line.slice(12).split(" ");
-      info.ahead = Math.abs(parseInt(a, 10)) || 0;
-      info.behind = Math.abs(parseInt(b, 10)) || 0;
-    } else if (line.startsWith("u ")) { info.dirty++; info.conflicts++; }
-    else if (/^[12?] /.test(line)) info.dirty++;
-  }
-  if (info.branch === "(detached)") info.branch = null;
-  return info;
-}
-
-// What Git answers when there is nothing unusual to report: a detached or unborn
-// HEAD, a branch without an upstream. Anything else (ssh, a folder gone) is a
-// look Git did not make, and the panel keeps what it showed.
-const GIT_NO_REF = /not a symbolic ref|does not point to a branch|not a git repository/i;
-const GIT_NO_UPSTREAM = /no upstream configured|no such branch|does not point to a branch|ambiguous argument|unknown revision|not a git repository/i;
-const gitNoRepo = (r) => r.code !== 0 && /not a git repository/i.test(r.stderr ?? "");
-const gitUnanswered = (r, quiet) => r.code !== 0 && !quiet.test(r.stderr ?? "")
-  && !(quiet === GIT_NO_REF && r.code === 1 && !(r.stderr ?? "").trim());
-
-// One place's git answer. `prev` is the record this panel already has; `walk`
-// asks for the worktree's changed files too, `force` reads the refs even when
-// they were read a moment ago (a folder watch or live branch change).
-async function checkGit(key, place, prev, { walk = false, force = false, since = 0, results } = {}) {
-  prev = latestGitRecord(key, prev);
-  const full = walk || !prev?.info?.repo;
-  // Another panel's answer can stand in for this request if it read what we need
-  // after the request was made. A forced request may share a millisecond with
-  // an older read, so give the event priority in a tie.
-  const stamp = full ? prev?.dirtyAt : prev?.refsAt;
-  if (since && (stamp > since || (!force && stamp === since))) return prev;
-  const answer = await lookGit(place, prev, full);
-  // A fast refresh of the same place must still be adoptable by the other mod.
-  const record = { ...answer, at: Math.max(Date.now(), (prev?.at ?? 0) + 1) };
-  results?.set(key, record);
-  return record;
-}
-
-async function lookGit(place, prev, full) {
-  const on = place.on ?? null;
-  const opts = { cwd: place.cwd, on, timeout: GIT_TIMEOUT };
-  const info = prev?.info ?? null;
-  const refsAt = prev?.refsAt ?? 0;
-  const dirtyAt = prev?.dirtyAt ?? 0;
-  const now = Date.now();
-  const unsure = { refsAt, dirtyAt, info, unsure: true };
-  const missing = { refsAt: now, dirtyAt: now, info: null, unsure: false };
-  try {
-    if (!full) {
-      // A checkout, a commit or a fetch shows here without walking this
-      // repository's worktree.
-      const [ref, up] = await allSettledValues(
-        exec("git", ["symbolic-ref", "-q", "HEAD"], opts),
-        exec("git", ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], opts),
-      );
-      if (gitUnanswered(ref, GIT_NO_REF) || gitUnanswered(up, GIT_NO_UPSTREAM)) {
-        return unsure;
-      }
-      if (gitNoRepo(ref) || gitNoRepo(up)) return missing;
-      // `HEAD...@{upstream}` counts ahead then behind; no upstream has nothing to count.
-      const counts = up.code === 0
-        ? await exec("git", ["rev-list", "--left-right", "--count", "HEAD...@{upstream}"], opts)
-        : null;
-      if (counts && gitUnanswered(counts, GIT_NO_UPSTREAM)) return unsure;
-      const branch = ref.code === 0 ? ref.stdout.trim().replace(/^refs\/heads\//, "") : "";
-      const upstream = up.code === 0 ? up.stdout.trim() || null : null;
-      const [ahead, behind] = counts?.code === 0
-        ? counts.stdout.trim().split(/\s+/).map((n) => Math.abs(parseInt(n, 10)) || 0)
-        : [0, 0];
-      return { refsAt: now, dirtyAt, unsure: false, info: { ...info, branch: branch || null, upstream, ahead, behind } };
-    }
-    let repoInfo = info;
-    if (!repoInfo?.repo) {
-      // A folder name may contain a newline, so ask for each path on its own.
-      const [top, common] = await allSettledValues(
-        exec("git", ["rev-parse", "--path-format=absolute", "--show-toplevel"], opts),
-        exec("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], opts),
-      );
-      if (gitNoRepo(top) || gitNoRepo(common)) return missing;
-      // Strip only Git's final newline: a folder name may contain whitespace.
-      const tree = top.stdout.replace(/\n$/, "");
-      const repo = common.stdout.replace(/\n$/, "");
-      if (top.code !== 0 || common.code !== 0 || !tree || !repo) return unsure;
-      repoInfo = { name: gitRepoName(repo), repo: JSON.stringify([on, repo]), linked: repo !== `${tree}/.git` };
-    }
-    // Avoid locks and fsmonitor cookies that would wake the repository watch.
-    const status = await exec("git", ["--no-optional-locks", "-c", "core.fsmonitor=false", "status", "--porcelain=v2", "--branch"], opts);
-    if (gitNoRepo(status)) return missing;
-    if (status.code !== 0) return unsure;
-    return { refsAt: now, dirtyAt: now, unsure: false, info: { ...repoInfo, ...gitBranchInfo(status.stdout) } };
-  } catch {
-    // Couldn't ask (the machine is away): keep what it showed, look again later.
-    return unsure;
-  }
-}
-// --- end shared git cache ---
 
 // A space, tab, pane or terminal id without its machine prefix: a process on
 // that machine names its own terminal the bare way.
@@ -556,16 +252,6 @@ export function glyph(status) {
 
 export function tone(t, status) {
   return t[status] ?? t.unknown;
-}
-
-// A space's state, drawn as the agents list draws an agent's: a spinner while
-// working, a badge when blocked, a ring when idle, a dot when done.
-export function mark(status, t) {
-  if (status === "working") return svg("mods/workspace-chrome/spinner.svg").size(12).mx(1).flex_none().text_color(t.working).spin(900);
-  if (status === "blocked") return div().size(14).flex_none().rounded(4).bg(t.blocked + "26").text_size(10.5).font_bold().text_color(t.blocked).flex().items_center().justify_center().child("!");
-  if (status === "idle") return div().size(7).mx(3).flex_none().rounded(4).border(1.5).border_color(t.idle ?? t.dim);
-  if (status === "done") return div().size(7).mx(3).flex_none().rounded(4).bg(t.done);
-  return null;
 }
 
 export default class Spaces extends View {
@@ -791,7 +477,7 @@ export default class Spaces extends View {
         const counts = new Map();
         for (const term of JSON.parse(result.stdout).terminals) {
           if (term.state !== "finished") continue;
-          const machine = machineOfTerminal(term.address);
+          const machine = machineOf(term.address);
           counts.set(machine, (counts.get(machine) ?? 0) + 1);
         }
         this.finishedCounts = counts;
@@ -991,7 +677,7 @@ export default class Spaces extends View {
     const key = m ?? "";
     const s = live ? (this.stats[key] ?? {}) : {};
     const hist = live ? this.history[key] ?? [] : [];
-    const width = find(layout(), "sidebar")?.size?.px ?? Infinity;
+    const width = sidebarPx();
     const graphs = width >= 260 ? "full" : width >= 200 ? "gauge" : "none";
     // Numbers only, and not much room for them: tuck the line in under the icon.
     const tight = graphs === "none";
@@ -1042,7 +728,7 @@ export default class Spaces extends View {
         if (machine && !peers.some(peer => peer.name === machine && peer.state === "connected")) {
           throw new Error("Machine is disconnected");
         }
-        const finished = records.filter(term => term.state === "finished" && machineOfTerminal(term.address) === machine);
+        const finished = records.filter(term => term.state === "finished" && machineOf(term.address) === machine);
         let removed = 0;
         for (const term of finished) {
           try {
@@ -1619,7 +1305,7 @@ export default class Spaces extends View {
   }
 
   row({ w, i, g, tree }, t, terminalCount) {
-    const px = find(layout(), "sidebar")?.size?.px ?? Infinity;
+    const px = sidebarPx();
     const id = `space-${w.id}`;
     const leading = statusAtStart();
     const open = this.terminalsOpen(id);
@@ -1861,8 +1547,8 @@ export default class Spaces extends View {
           toggle("Show keep-awake button", SHOW_CUP).tooltip("The button stays visible while this Mac is being kept awake."),
         ]))
         .child(section("Agents", [
-          choices("Sort agents", "agents.sort", [["priority", "Priority"], ["grouped", "Grouped by space"]]),
-          toggle("Expand child agents by default", "sidebar.agents.expandChildren"),
+          choices("Sort agents", AGENT_SORT, [["priority", "Priority"], ["grouped", "Grouped by space"]]),
+          toggle("Expand child agents by default", EXPAND_CHILDREN),
         ])))
       .child(h_flex().h(48).flex_none().px(18).items_center().justify_end().border_t(1).border_color(t.border)
         .child(div().id("settings-done").px(12).h(28).flex().items_center().rounded(6).cursor_pointer()
