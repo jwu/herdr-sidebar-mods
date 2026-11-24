@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { loadMod, uiState } from "./load-mod.mjs";
+import { loadMod, uiState, makeDeferred, flushTurns } from "./load-mod.mjs";
 
 function init(name, overrides = {}, storage = {}) {
   const loaded = loadMod(name, overrides, storage);
@@ -439,7 +439,7 @@ test("both sidebars keep child terminals in a space on their machine", () => {
     clickKeep();
     assert.deepEqual(calls, [["space.select", first.id, undefined], keep], name);
     herdr.spaces = () => [local];
-    herdr.window = () => ({ platform: "macos", push_toast: toast => toasts.push(toast) });
+    herdr.notify = toast => toasts.push(toast);
     clickKeep();
     assert.deepEqual(calls, [], name);
     assert.equal(toasts.length, 1, name);
@@ -556,7 +556,7 @@ test("Spaces groups live pane-less terminals by their nearest ancestor space", (
 test("machine Clear only removes finished records from the selected machine", async () => {
   const { instance, context, herdr } = spacePanel();
   const calls = [], toasts = [];
-  herdr.window = () => ({ push_toast: toast => toasts.push(toast) });
+  herdr.notify = toast => toasts.push(toast);
   herdr.hc = async args => {
     calls.push([...args]);
     return { code: 0, stdout: JSON.stringify({
@@ -668,4 +668,133 @@ test("a temporary Agents git error keeps the previous tail", async () => {
   instance.refreshGit(context);
   await context.tasks.at(-1).promise;
   assert.equal(instance.git[key], null);
+});
+
+test("polls pause while the window is out of sight and resume when it shows", async () => {
+  let visible = false;
+  const calls = [];
+  const loaded = loadMod("sidebar-spaces", {
+    checking: () => false,
+    window: () => ({ platform: "macos", active: false, visible }),
+    exec: async (cmd, args) => { calls.push(["exec", args?.[1]?.slice(0, 20)]); return { code: 1, stdout: "", stderr: "" }; },
+    hc: async args => { calls.push(["hc", ...args]); return { code: 1, stdout: "", stderr: "" }; },
+  });
+  const instance = new loaded.Class();
+  instance.init({}, loaded.context);
+  await loaded.context.flush();
+  calls.length = 0;
+  const every = ms => loaded.context.timers.find(t => t.ms === ms);
+  instance.checkNew = () => calls.push(["checkNew"]);
+  for (const ms of [15000, 2000, 250]) await every(ms).fn(loaded.context);
+  await loaded.context.flush();
+  assert.deepEqual(calls, [], "nothing runs while hidden");
+  visible = true;
+  await every(2000).fn(loaded.context);
+  await every(250).fn(loaded.context);
+  await loaded.context.flush();
+  assert.ok(calls.some(c => c[0] === "hc" && c[1] === "machine"), "machines are asked again on return");
+  assert.ok(calls.some(c => c[0] === "checkNew"));
+
+  // Herdr without the flag keeps polling.
+  const old = loadMod("sidebar-agents", { checking: () => false, window: () => ({ platform: "macos" }) });
+  const agents = new old.Class();
+  agents.init({}, old.context);
+  let refreshed = 0;
+  agents.refreshGit = () => refreshed++;
+  await old.context.timers.find(t => t.ms === 5000).fn(old.context);
+  assert.equal(refreshed, 1);
+});
+
+test("Spaces defers repository watch events while hidden", async () => {
+  let visible = false;
+  const fired = makeDeferred();
+  const { instance, context } = init("sidebar-spaces", {
+    window: () => ({ visible }),
+    watchFolder: (() => { let n = 0; return () => n++ ? new Promise(() => {}) : fired.promise; })(),
+  });
+  const key = JSON.stringify([null, "/repo"]);
+  instance.git[key] = { repo: key };
+  const refreshed = [];
+  instance.refreshGit = (keys) => refreshed.push([...keys]);
+  instance.watch("/repo", context);
+  fired.resolve([]);
+  await flushTurns();
+  assert.deepEqual(refreshed, []);
+  assert.ok(instance.deferredRefs.has(key));
+  visible = true;
+  instance.due = () => new Set();
+  instance.checkNew(context);
+  assert.deepEqual(refreshed, [[key]]);
+});
+
+test("Spaces drags let go outside the list end without a drop", () => {
+  const { instance, context, herdr } = spacePanel();
+  const calls = [];
+  herdr.run = (name, args) => calls.push([name, args]);
+  let root = instance.render(context);
+  const windowHandlers = () => uiState([...nodes(root)].find(n => uiState(n).handlers["on_window_mouse_up:left"]) ?? root).handlers;
+  assert.equal(windowHandlers()["on_window_mouse_up:left"], undefined, "nothing watches the window without a press");
+  const bounds = { x: 0, y: 30, width: 300, height: 400 };
+  const press = () => {
+    uiState(byId(root, "space-local")).handlers["on_mouse_down:left"]({}, context);
+    root = instance.render(context);
+    uiState(byId(root, "space-remote")).handlers.on_mouse_move({}, context);
+    return windowHandlers();
+  };
+
+  let handlers = press();
+  handlers["on_window_mouse_up:left"]({ position: { x: 100, y: 100 }, bounds }, context);
+  assert.equal(instance.pressed, "local", "a release inside is the row's to handle");
+  handlers["on_window_mouse_up:left"]({ position: { x: 500, y: 100 }, bounds }, context);
+  assert.equal(instance.pressed, null);
+  assert.equal(instance.over, null);
+
+  handlers = press();
+  handlers.on_window_mouse_move({ position: { x: 500, y: 100 }, bounds, pressed_button: "left" }, context);
+  assert.equal(instance.pressed, "local", "still carried outside the list");
+  assert.equal(instance.over, null, "no drop line while outside");
+  handlers.on_window_mouse_move({ position: { x: 100, y: 100 }, bounds }, context);
+  assert.equal(instance.pressed, null, "released outside the window");
+
+  uiState(byId(root, "machine-vps")).handlers["on_mouse_down:left"]({}, context);
+  root = instance.render(context);
+  windowHandlers()["on_window_mouse_up:left"]({ position: { x: 100, y: 0 }, bounds }, context);
+  assert.equal(instance.machinePress, null);
+  assert.deepEqual(calls, []);
+});
+
+test("palette commands reach the panels", async () => {
+  const queue = (commands) => {
+    let i = 0;
+    return () => i < commands.length ? Promise.resolve(commands[i++]) : new Promise(() => {});
+  };
+  const overlays = [];
+  const spacesPanel = loadMod("sidebar-spaces", {
+    checking: () => false, nextCommand: queue(["settings", "keep-awake"]), openOverlay: spec => overlays.push(spec),
+  });
+  const s = new spacesPanel.Class();
+  let cups = 0;
+  s.toggleCup = () => cups++;
+  s.init({}, spacesPanel.context);
+  await flushTurns();
+  assert.equal(JSON.stringify(overlays.map(o => o.props)), JSON.stringify([{ sidebarSettings: true }]));
+  assert.equal(cups, 0, "no cup where caffeinate is missing");
+
+  const sorts = [];
+  const agentsPanel = loadMod("sidebar-agents", {
+    checking: () => false, nextCommand: queue(["sort-grouped", "bogus", "sort-priority"]),
+    setShared: (key, value) => sorts.push([key, value]),
+  });
+  new agentsPanel.Class().init({}, agentsPanel.context);
+  await flushTurns();
+  assert.deepEqual(sorts, [["agents.sort", "grouped"], ["agents.sort", "priority"]]);
+});
+
+test("palette entries name their own mod's commands", async () => {
+  const { readFileSync } = await import("node:fs");
+  for (const mod of ["sidebar-spaces", "sidebar-agents"]) {
+    const { palette } = JSON.parse(readFileSync(new URL(`../mods/${mod}/mod.json`, import.meta.url), "utf8"));
+    assert.ok(palette.length);
+    for (const p of palette) assert.ok(p.command.startsWith(`${mod}.`) && p.title.trim() && !p.args, p.command);
+  }
 });

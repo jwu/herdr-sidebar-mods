@@ -191,6 +191,7 @@ function herdrMocks() {
     setAgentOrder: noop,
     checking: () => true,
     setBadge: noop,
+    notify: noop,
     // A watch that never fires: tests that care pass their own deferred.
     watchFolder: () => new Promise(() => {}),
     window: () => ({ active: false, platform: "macos" }),

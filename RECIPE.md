@@ -43,7 +43,9 @@ button that opens the sort menu, then sections (Pinned, then Needs you /
 Working / Done / Idle by priority, or grouped per space), each heading in its
 state color with a count. An agent row is two lines with 4px corners, its 14px
 state slot and its 20px program icon both centred between them; a click on the
-program icon folds that agent's sub-agents. The first line is the folder the
+program icon folds that agent's sub-agents. The first line is the name someone
+gave the agent's pane with Rename (`pane_name`, Herdr 0.1.17+; the folder moves
+to the row's tooltip), else the folder the
 agent's pane is in (its space when the pane has none), with the sub-agent fold
 count and an age that becomes a pin button on hover flush right. The second
 leads with a monitor icon for this computer or a server icon and the machine's
@@ -82,7 +84,10 @@ focuses the agent; a
 right-click on a space opens the shipped space menu. Dragging a space row up or
 down shows a 2px accent line where it will land and moves it with
 `space.move`; worktrees reorder inside their main checkout's group only.
-Hovering a machine band tints it. The sidebar width drives the detail: at 260px
+On Herdr 0.1.18+, while a press is held, the list also watches the whole window (`on_window_mouse_up`,
+`on_window_mouse_move`): a drag released outside the list, over a terminal or
+outside the window, ends without a drop, and the drop line goes while the
+pointer is outside the list. Hovering a machine band tints it. The sidebar width drives the detail: at 260px
 and wider the sparkline and meter show; from 200px the graphics give way to a
 single 3px vertical gauge per reading; below 200px only the numbers remain, with
 the line tucked in under the icon so the shares still fit; below 160px the whole
@@ -101,7 +106,17 @@ badge to the number of listed agents whose actual state is blocked or done,
 counted before grouping or folding (not the parent's promoted urgency). It writes
 only when the count changes, clears at zero and on panel close, and never lets
 the sort overlay own the badge. Other badge-setting mods share the same
-last-writer-wins API.
+last-writer-wins API. The Agents panel passes its rows to `setAgentOrder`, so
+`agent.next`, `agent.prev` and, on Herdr 0.1.18+, `agent.select {index}`
+follow the order the panel shows: pinned first, sorted or grouped as shown,
+with sub-agents of a plain terminal counted under it.
+
+Both `mod.json` files add command palette entries (Herdr 0.1.18+, older Herdr
+ignores the key): `sidebar-spaces.settings` opens Sidebar Settings,
+`sidebar-spaces.keep-awake` toggles the cup where `caffeinate` exists, and
+`sidebar-agents.sort-priority` / `sort-grouped` set `agents.sort`. Each panel
+reads them with `nextCommand()`, so they reach only a shown copy, and the
+palette accepts them only while the folder names match the mods'.
 
 The Spaces scroll area tracks a `ScrollHandle`: selecting a different space,
 changing its displayed index or resizing the list brings the active row into
@@ -117,11 +132,14 @@ instead. A `keeps_running_after_logout: false` machine shows the shipped logout
 warning and opens the official machine-add dialog for the fix (core 0.1.21+).
 
 **Built from:** two mods, `sidebar-spaces` and `sidebar-agents`, each with a
-`main.js` and a `mod.json` (`{"place":"none","title":"Spaces"|"Agents"}`). Both
+`main.js` and a `mod.json` (`{"place":"none","title":"Spaces"|"Agents","palette":[…]}`). Both
 import from `herdr`: `spaces`, `machines`, `panes`, `agents`, `terminals`,
 `focused`, `theme`, `shared`, `setShared`, `layout`, `window`, `run`, `exec`,
 `hc`, `openOverlay`, `closeOverlay`, `props`, `watchFolder`, `setAgentOrder`,
-`checking`, `setBadge`.
+`checking`, `setBadge`, `notify`, `nextCommand`. Messages (Clear results,
+a copied remote port, a keep without a space) go through `notify`; herdr's
+`window()` is a state snapshot with no toast method, and it is null during a
+check, so read it as `window()?.…`.
 From `gpui-kit`: `View`, `div`, `image`, `svg`; from `gpui-base`: `h_flex`,
 `v_flex`, `ScrollHandle`. Commands called:
 `space.select`, `space.new`, `space.move`, `pane.focus`, `terminal.peek`,
@@ -145,7 +163,12 @@ without walking the worktree. Refs refresh every 30s, dirty/conflict counts ever
 sooner. Spaces checks up to six places, Agents two, with at most two execs per
 place and 20-second exec timeouts. Local repo `watchFolder` events refresh refs
 immediately. Temporary failures retain the previous answer and back off; only
-an explicit not-a-repository answer clears it. Leaving a place drops its local
+an explicit not-a-repository answer clears it. While Herdr 0.1.18+ reports the
+window out of sight (`window()?.visible === false`: minimized, hidden, fully
+covered, on another Space), machine load, ports, the machine list, Git checks
+and the Agents age tick pause, and watch events wait in a set until the window
+shows; back in view, the machine list is asked at once. Older Herdr has no
+flag, so only an explicit `false` pauses. Leaving a place drops its local
 Git cache; a local repository no longer shown has its pending watch cancelled,
 and cancellation never restarts the watch. Space colors
 under `space.colors` stay maintained for the space picker. Listening ports are
@@ -207,4 +230,8 @@ agent contributes one to the macOS Dock badge; clearing those states clears the
 badge. Checks emit no helper-command warnings and do not touch the caffeine PID.
 Agent navigation reveals a row outside the viewport and unfolds its parent/group
 only on new focus. Dragging a Space inside its machine block still reorders it,
-while an ordinary click keeps its old action.
+while an ordinary click keeps its old action. On Herdr 0.1.18+, minimizing the
+window stops the panel's `exec` and `hc` calls until it shows again, letting a
+drag go over a terminal leaves no drop line behind, `herdr-app do
+agent.select:2` focuses the second agent the panel lists, and the command
+palette lists Sidebar settings and the agent sort entries.

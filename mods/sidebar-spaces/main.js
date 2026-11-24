@@ -7,7 +7,13 @@
 import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
 import * as fs from "fs/promises";
-import { spaces, machines, panes, terminals, focused, run, openOverlay, closeOverlay, props, exec, hc, appHome, theme, shared, setShared, watchFolder, window, layout, nextCommand, checking } from "herdr";
+import { spaces, machines, panes, terminals, focused, run, openOverlay, closeOverlay, props, exec, hc, appHome, theme, shared, setShared, watchFolder, window, layout, nextCommand, checking, notify } from "herdr";
+
+// Whether the platform presents the window (Herdr 0.1.18+). Older Herdr has no
+// flag, so only an explicit false pauses the polls.
+const shown = () => window()?.visible !== false;
+
+const openSettings = () => openOverlay({ mod: "sidebar-spaces", kind: "dialog", width: 510, height: 590, props: { sidebarSettings: true } });
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -95,7 +101,7 @@ function keepTerminal(address) {
   const machine = slash < 0 ? null : address.slice(0, slash);
   const there = spaces().filter(s => (s.machine ?? null) === machine);
   if (!there.length) {
-    window().push_toast({ title: "No space on this terminal's machine", level: "error" });
+    notify({ title: "No space on this terminal's machine", level: "error" });
     return;
   }
   if (!there.some(s => s.active)) {
@@ -611,6 +617,8 @@ export default class Spaces extends View {
     this.ready = {}; // machine -> its layout was readable at the last look
     this.at = {}; // space -> its where() at the last look
     this.watching = new Map(); // local repo -> its pending folder watch
+    this.deferredRefs = new Set(); // where()s a watch saw change while hidden
+    this.hidden = false;
     // Spaces made while this runs wait (at most a moment) for their git, so a
     // worktree appears under its repo instead of jumping there.
     this.shown = new Set(spaces().map((s) => s.id));
@@ -670,14 +678,20 @@ export default class Spaces extends View {
     if (checking()) return;
     // "pick1".."pick9" from keys.json: the panel's own row numbering, which the
     // machines dragged here can put out of step with `space.select`.
-    cx.spawn(async () => {
+    // "settings" and "keep-awake" come from the command palette (mod.json).
+    cx.spawn(async (cx) => {
       for (;;) {
-        const n = Number(String(await nextCommand()).replace(/^pick/, ""));
-        if (n >= 1 && n <= 9) this.pick(n);
+        const command = String(await nextCommand());
+        if (command === "settings") openSettings();
+        else if (command === "keep-awake") { if (this.cupHere) this.toggleCup(cx); }
+        else {
+          const n = Number(command.replace(/^pick/, ""));
+          if (n >= 1 && n <= 9) this.pick(n);
+        }
       }
     });
     this.refreshMachines(cx);
-    cx.timer.every(15000, cx => this.refreshMachines(cx));
+    cx.timer.every(15000, cx => { if (shown()) this.refreshMachines(cx); });
     // The Local header's cup is available wherever `caffeinate` exists.
     cx.spawn(async (cx) => {
       try { this.cupHere = (await exec("sh", ["-c", "command -v caffeinate"])).code === 0; } catch {}
@@ -685,14 +699,27 @@ export default class Spaces extends View {
       cx.notify();
     });
     cx.timer.every(CUP_VERIFY, (cx) => this.verifyCup(cx));
-    cx.timer.every(2000, cx => { this.refreshStats(cx); this.refreshPorts(cx); });
+    // Out of sight, the samples, scans and lookups wait; back in view, the
+    // machines are asked at once rather than at the next 15s.
+    cx.timer.every(2000, cx => {
+      if (!shown()) { this.hidden = true; return; }
+      if (this.hidden) { this.hidden = false; this.refreshMachines(cx); }
+      this.refreshStats(cx);
+      this.refreshPorts(cx);
+    });
     // `git status` walks the whole tree, on another machine a process there:
     // only when its answer could have changed (see `due`).
-    cx.timer.every(250, (cx) => this.checkNew(cx));
+    cx.timer.every(250, (cx) => { if (shown()) this.checkNew(cx); });
   }
 
   checkNew(cx) {
     if (this.finishedCountsDirty) this.refreshFinishedCounts(cx);
+    // Repository changes seen while the window was out of sight.
+    if (this.deferredRefs?.size) {
+      const keys = [...this.deferredRefs].filter(k => k in this.git);
+      this.deferredRefs.clear();
+      if (keys.length) this.refreshGit(keys, cx);
+    }
     const now = Date.now();
     const sp = spaces();
     const ps = panes();
@@ -752,7 +779,7 @@ export default class Spaces extends View {
       if (ready && this.ready[m.name] === false) for (const k of keys) if (JSON.parse(k)[0] === m.name) walked(k);
       this.ready[m.name] = ready;
     }
-    if (window().active) {
+    if (window()?.active) {
       // The fallback looks are for what moves without this machine seeing it (a
       // commit elsewhere, an editor saving): the refs alone every half minute,
       // the worktree's work less often.
@@ -1076,14 +1103,14 @@ export default class Spaces extends View {
         const failed = finished.length - removed;
         this.finishedRevision++;
         this.finishedCounts.set(machine, failed);
-        window().push_toast({
+        notify({
           title: failed ? `${label}: removed ${removed}, could not remove ${failed}`
             : removed ? `${label}: removed ${removed} finished ${removed === 1 ? "terminal" : "terminals"}`
             : `${label}: no finished terminals`,
           level: failed ? "error" : "info",
         });
       } catch (error) {
-        window().push_toast({ title: `${label}: ${error.message}`, level: "error" });
+        notify({ title: `${label}: ${error.message}`, level: "error" });
       } finally {
         this.clearingFinished.delete(machine);
         cx.notify();
@@ -1225,7 +1252,8 @@ export default class Spaces extends View {
           // Something in the repository changed (a commit, a checkout, a staged
           // file): read the refs now, not when the fallback comes round.
           for (const k of keys) { this.gitForced.add(k); this.gitWalk.delete(k); }
-          this.refreshGit(keys, cx);
+          if (shown()) this.refreshGit(keys, cx);
+          else for (const k of keys) (this.deferredRefs ??= new Set()).add(k);
           current = watchFolder(repo);
           this.watching.set(repo, current);
         }
@@ -1441,7 +1469,7 @@ export default class Spaces extends View {
       const drop = () => div().absolute().left(0).right(0).h(2).bg(t.accent)
         .when(from < machineNames.indexOf(m), (el) => el.bottom(0))
         .when(from > machineNames.indexOf(m), (el) => el.top(0));
-      const press = () => { this.machinePress = { m }; this.machineOver = { m }; };
+      const press = (_e, cx) => { this.machinePress = { m }; this.machineOver = { m }; cx.notify(); };
       const over = (cx) => {
         if (this.machinePress && this.machineOver?.m !== m) {
           this.machineOver = { m };
@@ -1681,9 +1709,10 @@ export default class Spaces extends View {
           .when(fromIndex < i, line => line.bottom(0))
           .when(fromIndex > i, line => line.top(0)),
       ))
-      .on_mouse_down("left", () => {
+      .on_mouse_down("left", (_e, cx) => {
         this.pressed = w.id;
         this.over = w.id;
+        cx.notify();
       })
       .on_mouse_move((_e, cx) => {
         const source = spaces().find(s => s.id === this.pressed);
@@ -1769,9 +1798,10 @@ export default class Spaces extends View {
       // The row under a space's ports selects that space when clicked on its
       // air; a port itself stops the press so it only opens (or copies) and
       // leaves the current space alone.
-      .on_mouse_down("left", () => {
+      .on_mouse_down("left", (_e, cx) => {
         this.pressed = w.id;
         this.over = w.id;
+        cx.notify();
       })
       .on_mouse_up("left", (_e, cx) => {
         const same = this.pressed === w.id;
@@ -1804,7 +1834,7 @@ export default class Spaces extends View {
             if (local) cx.open_url(`http://localhost:${p.number}/`);
             else {
               cx.write_to_clipboard(`${host}:${p.number}`);
-              window().push_toast({ title: `${host}:${p.number}`, level: "info" });
+              notify({ title: `${host}:${p.number}`, level: "info" });
             }
           })
           .child(`:${p.number}`),
@@ -1912,11 +1942,11 @@ export default class Spaces extends View {
         .child(h_flex().items_center()
           .when(!collapsed, el => el.child(div().id("sidebar-settings").size(26).flex_none().flex().items_center().justify_center()
             .rounded(6).cursor_pointer().hover(s => s.bg(t.hover)).tooltip("Sidebar settings")
-            .on_click(() => openOverlay({ mod: "sidebar-spaces", kind: "dialog", width: 510, height: 590, props: { sidebarSettings: true } }))
+            .on_click(openSettings)
             .child(svg("mods/workspace-chrome/settings.svg").size(14))))
           .child(div().id("space-new").size(26).flex_none().flex().items_center().justify_center().rounded(6).hover(s => s.bg(t.hover))
             .on_click(() => run("space.new")).child(svg("mods/workspace-chrome/plus.svg").size(14)))))
-      .child(v_flex().flex_1().min_h(0).pb(14).overflow_y_scrollbar().mode("always").track_scroll(this.scroll)
+      .child(this.followDrag(v_flex()).flex_1().min_h(0).pb(14).overflow_y_scrollbar().mode("always").track_scroll(this.scroll)
         .on_size_change((size, cx) => {
           // Herdr can report the same viewport size again after a list update.
           if (size.width === this.scrollSize?.width && size.height === this.scrollSize?.height) return;
@@ -1925,5 +1955,40 @@ export default class Spaces extends View {
         })
         .on_mouse_up("left", (_e, cx) => { this.pressed = null; this.machinePress = null; this.machineOver = null; cx.notify(); })
         .children(list));
+  }
+
+  // A drag let go outside the list (over a terminal, or outside the window)
+  // ends without a drop instead of waiting for the pointer to come back. Herdr
+  // 0.1.18+ reports releases and moves anywhere in the window; older Herdr
+  // keeps the list's own release.
+  // Only registered while a press is held, so ordinary pointer moves cost nothing.
+  followDrag(el) {
+    if (this.pressed === null && !this.machinePress) return el;
+    if (typeof el.on_window_mouse_up !== "function" || typeof el.on_window_mouse_move !== "function") return el;
+    const outside = (e) => {
+      const b = e.bounds, p = e.position;
+      return Boolean(b && p) && (p.x < b.x || p.y < b.y || p.x >= b.x + b.width || p.y >= b.y + b.height);
+    };
+    return el
+      .on_window_mouse_up("left", (e, cx) => { if (outside(e)) this.cancelDrag(cx); })
+      .on_window_mouse_move((e, cx) => {
+        if (this.pressed === null && !this.machinePress) return;
+        // No left button on a move: it was released outside the window.
+        if (e.pressed_button !== "left") this.cancelDrag(cx);
+        else if (outside(e) && (this.over !== null || this.machineOver)) {
+          this.over = null;
+          this.machineOver = null;
+          cx.notify();
+        }
+      });
+  }
+
+  cancelDrag(cx) {
+    if (this.pressed === null && !this.machinePress) return;
+    this.pressed = null;
+    this.over = null;
+    this.machinePress = null;
+    this.machineOver = null;
+    cx.notify();
   }
 }

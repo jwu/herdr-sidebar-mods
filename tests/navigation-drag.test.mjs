@@ -52,8 +52,13 @@ test("Agents scrolls to the focused row, counts headers, and leaves manual scrol
   root = p.render();
   assert.equal(p.instance.activeAt, 3);
   assert.deepEqual(p.instance.scroll.items, [1, 3]);
-  uiState(byId(root, "ag-list")).handlers.on_size_change({ width: 300, height: 150 }, p.context);
+  const resize = uiState(byId(root, "ag-list")).handlers.on_size_change;
+  resize({ width: 300, height: 150 }, p.context);
   assert.deepEqual(p.instance.scroll.items, [1, 3, 3]);
+  resize({ width: 300, height: 150 }, p.context); // Herdr repeats a size after a list update.
+  assert.deepEqual(p.instance.scroll.items, [1, 3, 3]);
+  resize({ width: 300, height: 120 }, p.context);
+  assert.deepEqual(p.instance.scroll.items, [1, 3, 3, 3]);
 });
 
 test("Agents unfolds a newly focused group but respects folding the current group", () => {
@@ -253,4 +258,17 @@ test("Spaces preserves its original sidebar reorder and click-to-select gestures
   assert.equal(p.instance.over, null);
   assert.equal(actions[0][0], "space.select");
   assert.equal(actions[0][1].id, "s1");
+});
+
+test("Agents rows prefer a pane's given name and keep the folder in the tooltip", () => {
+  const p = agentsPanel();
+  const text = node => uiState(node)?.children.map(c => typeof c === "string" ? c : text(c)).join("") ?? "";
+  let root = p.render();
+  assert.match(text(byId(root, "ag-t1")), /first/);
+  p.data.agents = p.data.agents.map(a => a.address === "t1" ? { ...a, pane_name: "Reviewer" } : a);
+  root = p.render();
+  const row = byId(root, "ag-t1");
+  assert.match(text(row), /Reviewer/);
+  assert.doesNotMatch(text(row), /first/);
+  assert.deepEqual(call(row, "tooltip"), ["tooltip", "/live/first"]);
 });

@@ -1,4 +1,18 @@
 {
   "place": "none",
-  "title": "Spaces"
+  "title": "Spaces",
+  "palette": [
+    {
+      "title": "Sidebar settings",
+      "command": "sidebar-spaces.settings",
+      "group": "Mod",
+      "words": "ultimate sidebar spaces agents git ports cpu memory display"
+    },
+    {
+      "title": "Keep this Mac awake (toggle)",
+      "command": "sidebar-spaces.keep-awake",
+      "group": "Mod",
+      "words": "caffeinate coffee sleep ultimate sidebar"
+    }
+  ]
 }

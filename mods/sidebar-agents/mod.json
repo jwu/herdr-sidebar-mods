@@ -1,4 +1,18 @@
 {
   "place": "none",
-  "title": "Agents"
+  "title": "Agents",
+  "palette": [
+    {
+      "title": "Sort agents by priority",
+      "command": "sidebar-agents.sort-priority",
+      "group": "Agent",
+      "words": "ultimate sidebar order needs you working done"
+    },
+    {
+      "title": "Group agents by space",
+      "command": "sidebar-agents.sort-grouped",
+      "group": "Agent",
+      "words": "ultimate sidebar order sort spaces"
+    }
+  ]
 }

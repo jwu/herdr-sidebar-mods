@@ -3,7 +3,7 @@
 
 import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
-import { agents, terminals, panes, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout, exec, checking, setBadge } from "herdr";
+import { agents, terminals, panes, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout, exec, checking, setBadge, notify, nextCommand } from "herdr";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -63,6 +63,10 @@ function toggleSidebar() {
   run("layout.resize", { id: "sidebar", px: narrow() ? (shared("sidebar.width") ?? 268) : window()?.platform === "macos" ? 76 : 44 });
 }
 
+// Whether the platform presents the window (Herdr 0.1.18+). Older Herdr has no
+// flag, so only an explicit false pauses the polls.
+const shown = () => window()?.visible !== false;
+
 // Keep opening brackets, quotes and emoji in real titles. Strip known status marks.
 const clean = (s) => (s ?? "").replace(/^(?:\[ [!.] \] |[✋⏳]\uFE0F?(?=\s)|(?!(?:\p{Emoji}\uFE0F|[#*]\u20E3))[^\p{L}\p{N}\p{Ps}\p{Pi}\p{Emoji_Presentation}])+/u, "").trim();
 
@@ -84,7 +88,7 @@ function keepTerminal(address) {
   const machine = slash < 0 ? null : address.slice(0, slash);
   const there = spaces().filter(s => (s.machine ?? null) === machine);
   if (!there.length) {
-    window().push_toast({ title: "No space on this terminal's machine", level: "error" });
+    notify({ title: "No space on this terminal's machine", level: "error" });
     return;
   }
   if (!there.some(s => s.active)) {
@@ -432,9 +436,18 @@ export default class Agents extends View {
     if (checking()) return;
     this.badgeOwner = true;
     if (!this.pendingPins.length) localStorage.removeItem("pins");
+    // "sort-priority" and "sort-grouped" from the command palette (mod.json).
+    cx.spawn(async () => {
+      for (;;) {
+        const command = String(await nextCommand());
+        const sort = SORTS.find(s => `sort-${s.id}` === command);
+        if (sort) setShared("agents.sort", sort.id);
+      }
+    });
     this.refreshGit(cx);
-    cx.timer.every(5000, (cx) => this.refreshGit(cx));
-    cx.timer.every(30000, (cx) => cx.notify());
+    // Out of sight, Git lookups and age ticks wait for the window to show again.
+    cx.timer.every(5000, (cx) => { if (shown()) this.refreshGit(cx); });
+    cx.timer.every(30000, (cx) => { if (shown()) cx.notify(); });
   }
 
   close() {
@@ -916,6 +929,8 @@ export default class Agents extends View {
     const tabs = new Map(modelSpaces.flatMap(s => s.tabs).map(tab => [tab.id, tab]));
     const labels = new Map(list.map(a => {
       if (a.terminalParent) return [a.address, a.title];
+      // A name someone gave the pane (Rename, Herdr 0.1.17+) wins, as in the pane header.
+      if (a.pane_name) return [a.address, a.pane_name];
       const tab = tabs.get(a.tab);
       const many = tabCounts.get(a.tab) > 1;
       return [a.address, tab ? title(many ? { ...tab, named: false } : tab, many ? a : leads.get(a.tab)) : (a.title || a.program?.name || "")];
@@ -973,7 +988,7 @@ export default class Agents extends View {
         .child(svg(`mods/workspace-chrome/${isPinned ? "pin-off" : "pin"}.svg`).size(13));
       // The program and state flank the working folder and machine details.
       const cwd = cwdOf.get(a.pane) ?? a.cwd ?? null;
-      const folder = a.pane || a.terminalParent ? base(cwd) || cwd || a.space_name || label(a) : label(a);
+      const folder = a.pane_name || (a.pane || a.terminalParent ? base(cwd) || cwd || a.space_name || label(a) : label(a));
       const g = cwd ? this.git[gitKey(machine, cwd)] : null;
       const remote = g?.upstream?.includes("/") ? `\u25b8 ${g.upstream.slice(0, g.upstream.indexOf("/"))}` : "";
       const tail = showBranch ? [g?.branch, remote].filter(Boolean).join(" ") : "";
@@ -1005,6 +1020,8 @@ export default class Agents extends View {
         })
         .on_click(open)
         .when(a.terminalParent, el => el.tooltip([cwd, a.title].filter(Boolean).join(" · ")))
+        // A named pane hides its folder from the row; the tooltip keeps it.
+        .when(Boolean(a.pane_name && !a.terminalParent && cwd), el => el.tooltip(cwd))
         .when(leading, el => el.child(this.statusCell(t, a)))
         .when(Boolean(pic), (el) => el.child(div().id(`agent-fold-${a.address}`).flex_none()
           .when(subs.length > 0, (el) => el.on_click((_e, cx) => toggleChildren(a.address, cx))).child(pic)))
@@ -1107,7 +1124,12 @@ export default class Agents extends View {
       )
       .child(v_flex().id("ag-list").flex_1().min_h(0).when(!collapsed, (el) => el.pl(8).pr(SCROLL_GUTTER)).overflow_y_scrollbar().mode("always")
         .track_scroll(this.scroll)
-        .on_size_change((_size, cx) => { if (this.activeAt >= 0) { this.scroll.scroll_to_item(this.activeAt); cx.notify(); } })
+        .on_size_change((size, cx) => {
+          // Herdr can report the same viewport size again after a list update.
+          if (size.width === this.scrollSize?.width && size.height === this.scrollSize?.height) return;
+          this.scrollSize = size;
+          if (this.activeAt >= 0) { this.scroll.scroll_to_item(this.activeAt); cx.notify(); }
+        })
         .children(rows))
       .when(collapsed, (el) =>
         el.child(
