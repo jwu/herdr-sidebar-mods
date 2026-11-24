@@ -153,18 +153,21 @@ sampled every 5s with `exec("sh", ["-c", …], {on: machine})`: Linux reads
 `vm_stat`, `hw.memsize` and sums `ps -A -o %cpu=`, and MINGW/MSYS machines use
 the Linux path. The machine list is `hc machine ls --json` every 15s. Both
 panels share Git results in `shared("sidebar.git.v1")`, keyed by machine and
-live folder. Short-lived claims deduplicate simultaneous looks and expire after
-reloads. Up to 64 recent results are shared for 15 minutes; visible places keep
-local scan ages even if evicted. Two separate `rev-parse` calls identify a repo
-without confusing newlines in paths; a full scan then uses
-`git --no-optional-locks -c core.fsmonitor=false status --porcelain=v2 --branch`.
+live folder. A peer result can satisfy a queued look if it was read after the
+request. Each pool publishes its new results in one shared write, keeping any
+newer answers already in the cache. Up to 64 recent results are shared for 15
+minutes. Visible places keep local scan ages even if evicted. A first scan uses
+two `rev-parse` calls to identify the repo even when paths contain newlines.
+Each worktree scan uses `git --no-optional-locks -c core.fsmonitor=false status
+--porcelain=v2 --branch` and reuses the repo identity when it is already known.
 Between scans, `symbolic-ref`, upstream `rev-parse` and `rev-list` read refs
 without walking the worktree. Refs are due every 30s. Dirty/conflict counts are
 due every 60s, or every 15s for the Agents panel's current space and the agent
 being viewed. Spaces can scan sooner after a terminal's command ends, a folder
-moves, or a machine returns. Spaces checks up to six places, Agents two, with at most two execs per
-place and 20-second exec timeouts. Local repo `watchFolder` events refresh refs
-immediately. Temporary failures retain the previous answer and back off; only
+moves, or a machine returns. Spaces checks up to six places at once and Agents
+two. Each place runs at most two execs concurrently, with 20-second exec
+timeouts. Local repo `watchFolder` events and live branch changes refresh refs
+immediately. Temporary failures retain the previous answer and back off. Only
 an explicit not-a-repository answer clears it. While Herdr 0.1.18+ reports the
 window out of sight (`window()?.visible === false`: minimized, hidden, fully
 covered, on another Space), machine load, ports, the machine list, Git checks

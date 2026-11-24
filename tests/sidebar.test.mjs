@@ -710,6 +710,7 @@ test("Spaces defers repository watch events while hidden", async () => {
   const fired = makeDeferred();
   const { instance, context } = init("sidebar-spaces", {
     window: () => ({ visible }),
+    spaces: () => [{ id: "s1", folder: "/repo", tabs: [] }],
     watchFolder: (() => { let n = 0; return () => n++ ? new Promise(() => {}) : fired.promise; })(),
   });
   const key = JSON.stringify([null, "/repo"]);
@@ -720,10 +721,11 @@ test("Spaces defers repository watch events while hidden", async () => {
   fired.resolve([]);
   await flushTurns();
   assert.deepEqual(refreshed, []);
-  assert.ok(instance.deferredRefs.has(key));
+  assert.ok(instance.gitForced.has(key));
+  const requested = instance.gitRequested.get(key);
   visible = true;
-  instance.due = () => new Set();
   instance.checkNew(context);
+  assert.equal(instance.gitRequested.get(key), requested);
   assert.deepEqual(refreshed, [[key]]);
 });
 
