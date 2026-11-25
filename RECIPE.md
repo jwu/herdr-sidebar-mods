@@ -40,7 +40,7 @@ row *and* its ports line, so a selected space highlights both lines with one
 
 The Agents panel repeats the pattern: a header with `Agents` and a clock
 button that opens the sort menu, then sections (Pinned, then Needs you /
-Working / Done / Idle by priority, or grouped per space), each heading in its
+Done / Unread / Working / Idle by priority, or grouped per space), each heading in its
 state color with a count. An agent row is two lines with 4px corners, its 14px
 state slot and its 20px program icon both centred between them; a click on the
 program icon folds that agent's sub-agents. The first line is the name someone
@@ -104,7 +104,7 @@ red, each a fixed segment of its own. Agents fold and unfold their sub-agents fr
 program icon, sort by priority or by space from the clock menu (remembered in
 the mod's shared state `agents.sort`), and pin an agent with the pin button
 that appears on hover (`terminal.pin`). On macOS the Agents panel sets the Dock
-badge to the number of listed agents whose actual state is blocked or done,
+badge to the number of listed agents whose actual state is blocked, done or unread,
 counted before grouping or folding (not the parent's promoted urgency). It writes
 only when the count changes and clears at zero and on panel close. The sort
 and settings overlays leave the badge alone. Other badge-setting mods share the
@@ -112,6 +112,20 @@ same last-writer-wins API. The Agents panel passes its rows to `setAgentOrder`, 
 `agent.next`, `agent.prev` and, on Herdr 0.1.18+, `agent.select {index}`
 follow the order the panel shows: pinned first, sorted or grouped as shown,
 with sub-agents of a plain terminal counted under it.
+
+An idle agent row's hover adds a crossed-out eye beside the pin: it marks the
+agent unread in the shared state `sidebar.unread` (address → the core's turn at
+marking and whether focus has left since). The core keeps reporting a looked-at
+agent as done, so a changed turn, not the status, tells a new turn apart. A
+marked agent shows a dot in the unread color (red, yellow, blue or purple from
+the theme's ANSI colors, `sidebar.agents.unreadColor`) and sits in its own
+Unread section; the row's check and the section heading's double check clear
+marks. A new turn, any state but idle or done, or the terminal ending always
+clears it; with `sidebar.agents.unreadClear` at its default, leaving the agent
+and coming back does too. Spaces and the pane header read the same marks. One
+dot standing for many agents (a space row, a folded group or fold count)
+ranks blocked > done > working > unread > idle; sections rank unread above
+working.
 
 Both `mod.json` files add command palette entries (Herdr 0.1.18+, older Herdr
 ignores the key): `sidebar-spaces.settings` opens Sidebar Settings,

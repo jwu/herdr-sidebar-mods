@@ -50,7 +50,8 @@ In your personal layout, set `content.pane.header.content.mod` to `pane-header` 
 - **Agents**
   - See agent status, working folder, and Git context in each row.
   - Sort and pin agents, and expand child sessions.
-  - See the number of blocked or finished agents on the macOS Dock badge.
+  - Mark an agent you looked at as unread to come back to it later.
+  - See the number of blocked, finished, or unread agents on the macOS Dock badge.
 
   <img src="docs/agents.webp" alt="Agents panel showing agent rows, child sessions, and Git status" width="340">
 
@@ -65,6 +66,7 @@ In your personal layout, set `content.pane.header.content.mod` to `pane-header` 
   - Spaces adds **Sidebar settings** and **Keep this Mac awake (toggle)** to the command palette. Agents adds **Sort agents by priority** and **Group agents by space**.
   - The sidebar stops polling machines, ports, and Git while the window is minimized or hidden.
 - A pane renamed with **Rename** shows its name in the Agents panel instead of its folder.
+- Hover an idle agent and click the crossed-out eye to mark it unread. It moves to the **Unread** section and shows an unread dot in Agents, Spaces, and the pane header. Click the check on its row, or the double check on the Unread heading, to mark it read. A new turn always clears the mark. In Sidebar settings, **Clear unread when** chooses whether leaving the agent and coming back also clears it, and **Unread color** picks its color.
 
 ## License
 

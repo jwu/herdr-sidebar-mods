@@ -9,16 +9,16 @@ import { v_flex, h_flex, ScrollHandle } from "gpui-base";
 import { spaces, machines, panes, terminals, focused, run, openOverlay, props, exec, hc, appHome, theme, shared, setShared, watchFolder, window, nextCommand, checking, notify } from "herdr";
 import {
   sidebarPx, narrow, shown, GLYPH, SEG_GAP, SCROLL_GUTTER, fit, segmentBudgets,
-  TREE_STROKE_WIDTH, treeLines, machineOf, keepTerminal, viewedTerminalStatuses, mark,
+  TREE_STROKE_WIDTH, treeLines, machineOf, keepTerminal, viewedTerminalStatuses, unreadStatuses, unreadColor, mark,
   SHOW_USAGE, SHOW_PORTS, SHOW_CUP, EXPAND_TERMINALS,
   SHOW_GIT_BRANCH, SHOW_GIT_CHANGES, SHOW_GIT_SYNC, enabled, statusAtStart,
   GIT_DIRTY_EVERY, GIT_REFS_EVERY, gitKey, checkGit, latestGitRecord, readGitStore, gitRecordOf, writeGitStore,
 } from "./shared.js";
 import { hostOf, sampleScript, sampleSections, parsePorts, parseStats } from "./probe.js";
 import { CUP_PID, CUP_VERIFY, hasCaffeinate, cupPidAlive, readCupPid, removeCupPid, changeCupHold } from "./cup.js";
-import { settingsButton, settingsDialog } from "./settings.js";
+import { settingsButton, settingsDialog, settingsOverlay } from "./settings.js";
 
-const openSettings = () => openOverlay({ mod: "sidebar-spaces", kind: "dialog", width: 510, height: 590, props: { sidebarSettings: true } });
+const openSettings = () => openOverlay(settingsOverlay("sidebar-spaces"));
 
 // Where a space is now: its first terminal's live folder, else where it was made.
 // `ps`: panes(), read once by the caller (each read copies every pane).
@@ -118,11 +118,11 @@ const METER_W = 36;
 
 // A space speaks up only when something in it needs you.
 export function glyph(status) {
-  return status === "blocked" || status === "done" ? "●" : "·";
+  return status === "blocked" || status === "done" || status === "unread" ? "●" : "·";
 }
 
 export function tone(t, status) {
-  return t[status] ?? t.unknown;
+  return status === "unread" ? unreadColor(t) : t[status] ?? t.unknown;
 }
 
 export default class Spaces extends View {
@@ -693,7 +693,9 @@ export default class Spaces extends View {
     // Herdr's own order: this machine first, then machines by name. The panel
     // regroups them in the order dragged here (see `machineGroups`); a space cannot
     // move into another machine's block, so that order stays local to the mod.
-    const list = sp.map((w, i) => ({ w, i, g: this.git[where(w, ps)] ?? null }));
+    const showUnread = w => this.unreadSpaces?.has(w.id) && (!w.status || w.status === "idle")
+      ? { ...w, status: "unread" } : w;
+    const list = sp.map((w, i) => ({ w: showUnread(w), i, g: this.git[where(w, ps)] ?? null }));
     const mains = new Set(list.filter((r) => r.g && !r.g.linked).map((r) => r.g.repo));
     const nested = (r) => r.g?.linked && mains.has(r.g.repo);
     const out = [];
@@ -784,8 +786,15 @@ export default class Spaces extends View {
       this.finishedCountsDirty = true;
     }
     this.liveTerminalAddresses = live;
-    const shown = focused()?.shown;
-    const tasks = collapsed ? null : terminalGroups(spaces(), panes(), viewedTerminalStatuses(all, shown));
+    const focus = focused();
+    const shown = focus?.shown;
+    const statuses = unreadStatuses(viewedTerminalStatuses(all, shown), shown ?? focus?.terminal ?? focus?.agent ?? null);
+    // A space with an agent marked unread says so only when nothing else in it is
+    // going on: blocked > done > working > unread > idle.
+    const unread = new Set(statuses.filter(term => term.status === "unread").map(term => term.address));
+    const spaceOfTab = new Map(spaces().flatMap(s => (s.tabs ?? []).map(tab => [tab.id, s.id])));
+    this.unreadSpaces = new Set(panes().filter(p => unread.has(p.terminal)).map(p => spaceOfTab.get(p.tab)));
+    const tasks = collapsed ? null : terminalGroups(spaces(), panes(), statuses);
     const groups = this.machineGroups(collapsed, tasks?.byMachine.keys());
     this.activeAt = -1;
     let before = 0; // direct children before this machine, including guidance rows

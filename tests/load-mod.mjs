@@ -167,6 +167,8 @@ function herdrMocks() {
     hover: "#334155",
     ansi1: "#ef4444",
     ansi3: "#f59e0b",
+    ansi4: "#3b82f7",
+    ansi5: "#a855f7",
     unknown: "#94a3b8",
   };
   const noop = () => {};

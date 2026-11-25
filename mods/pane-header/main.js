@@ -6,7 +6,21 @@
 
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { panes, props, run, theme, home, layout, terminals } from "herdr";
+import { panes, props, run, theme, home, layout, terminals, shared } from "herdr";
+
+// Marked unread in the Agents sidebar (sidebar.unread there): a resting agent
+// shows a dot in the unread color until the sidebar clears the mark. The core keeps saying
+// done after you look, so the mark's turn tells a new turn apart.
+// The color the sidebar's settings chose for unread (sidebar.agents.unreadColor).
+const UNREAD_COLORS = { red: "ansi1", yellow: "ansi3", blue: "ansi4", purple: "ansi5" };
+const unreadColor = t => t[UNREAD_COLORS[shared("sidebar.agents.unreadColor")] ?? "ansi1"] ?? t.blocked;
+
+const unreadMarked = (status, term) => {
+  const marks = shared("sidebar.unread");
+  const mark = term && marks && typeof marks === "object" ? marks[term.address] : null;
+  return Boolean(mark) && (status === "idle" || status === "done") &&
+    (term.turn ?? term.status_ms ?? null) === (mark.turn ?? null);
+};
 
 // Match the first visible tab frame, including the active child of a stack.
 function paneFrame(node) {
@@ -62,10 +76,10 @@ export default class Pane extends View {
     if (!p) return div();
     const name = p.name || ((p.program?.agent || p.program?.shell) && p.program.name) || p.title || p.program?.name || "shell";
     const pic = icon(p.program, 14, t.dim);
-    const st = p.status;
     const pane = p.pane;
     const all = p.terminal ? terminals() : [];
     const term = all.find(t => t.address === p.terminal);
+    const st = unreadMarked(p.status, term) ? "unread" : p.status;
     const parent = term?.parent && all.find(t => t.address === term.parent);
     const bottom = paneFrame(layout())?.header?.position === "bottom";
     return h_flex()
@@ -96,6 +110,7 @@ export default class Pane extends View {
       .when(st === "working", el => el.child(svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.working).spin(900)))
       .when(st === "blocked", el => el.child(div().flex_none().px(6).h(18).flex().items_center().rounded(5).bg(t.blocked + "26").text_size(10.5).font_semibold().text_color(t.blocked).child("Needs you")))
       .when(st === "done", el => el.child(div().size(7).flex_none().rounded(4).bg(t.done)))
+      .when(st === "unread", el => el.child(div().size(7).flex_none().rounded(4).bg(unreadColor(t))))
       .when(this.hovered, el => el
         .child(this.button(t, `ph-r-${pane}`, "split-right", "pane.split", { direction: "right", pane }))
         .child(this.button(t, `ph-d-${pane}`, "split-down", "pane.split", { direction: "down", pane }))

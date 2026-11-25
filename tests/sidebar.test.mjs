@@ -160,6 +160,10 @@ test("Sidebar settings applies the selected status position to both panels", () 
   }
   uiState(byId(dialog, "setting-agents.sort-grouped")).handlers.on_click();
   assert.equal(shared("agents.sort"), "grouped");
+  uiState(byId(dialog, "setting-sidebar.agents.unreadClear-manual")).handlers.on_click();
+  assert.equal(shared("sidebar.agents.unreadClear"), "manual");
+  uiState(byId(dialog, "setting-sidebar.agents.unreadColor-yellow")).handlers.on_click();
+  assert.equal(shared("sidebar.agents.unreadColor"), "yellow");
   uiState(byId(dialog, "settings-done")).handlers.on_click();
   assert.deepEqual(closed, ["settings-overlay"]);
 });
@@ -182,7 +186,7 @@ test("Agents shows a settings gear beside sort when the layout has no Spaces mod
   assert.ok(uiState(controls).children.includes(sort));
   uiState(gear).handlers.on_click();
   assert.deepEqual(structuredClone(overlays), [
-    { mod: "sidebar-agents", kind: "dialog", width: 510, height: 590, props: { sidebarSettings: true } },
+    { mod: "sidebar-agents", kind: "dialog", width: 510, height: 646, props: { sidebarSettings: true } },
   ]);
 });
 
@@ -209,7 +213,7 @@ test("Agents settings overlay renders without starting the panel", () => {
     agents: unexpected, setBadge: unexpected, setAgentOrder: unexpected,
   }, { pins: "[]" });
   const dialog = instance.render(context);
-  assert.match(textOf(dialog), /Sidebar Settings/);
+  assert.match(textOf(dialog), /Ultimate Sidebar Settings/);
   assert.equal(context.tasks.length, 0);
   assert.equal(context.timers.length, 0);
   assert.equal(mocks.gpuiBase.scrollHandles.length, 0);
@@ -999,4 +1003,187 @@ test("palette entries name their own mod's commands", async () => {
     assert.ok(palette.length);
     for (const p of palette) assert.ok(p.command.startsWith(`${mod}.`) && p.title.trim() && !p.args, p.command);
   }
+});
+
+test("an idle agent marked unread waits in Unread until focus leaves and returns", () => {
+  // As the core reports them: an agent you have looked at still says done.
+  const t1 = { address: "t1", state: "live", status: "done", turn: 1 };
+  const t2 = { address: "t2", state: "live", status: "done", turn: 1 };
+  const values = new Map();
+  let focus = "t1";
+  const host = {
+    spaces: () => [{ id: "project", name: "Project", tabs: [{ id: "tab" }] }],
+    panes: () => [{ pane: "p1", tab: "tab", terminal: "t1" }, { pane: "p2", tab: "tab", terminal: "t2" }],
+    terminals: () => [t1, t2],
+    agents: () => [t1, t2].map((t, i) => ({ address: t.address, pane: `p${i + 1}`, space: "project", tab: "tab", status: t.status === "done" ? "idle" : t.status, seq: i, focused: focus === t.address })),
+    focused: () => ({ terminal: focus }),
+    shared: key => values.get(key),
+    setShared: (key, value) => values.set(key, value),
+  };
+  const p = init("sidebar-agents", host);
+  p.herdr.checking = () => false;
+  p.context.stop_propagation ??= () => {};
+  const render = () => p.instance.render(p.context);
+  const hasUnread = (address) => [...nodes(byId(render(), `ag-${address}`))].some(n =>
+    uiState(n).calls.some(([method, color]) => method === "bg" && color === p.herdr.theme().ansi1));
+  const mark = (address) => {
+    uiState(byId(render(), `ag-${address}`)).handlers.on_hover(true, p.context);
+    uiState(byId(render(), `unread-${address}`)).handlers.on_click({}, p.context);
+  };
+
+  // Another agent: cleared by focusing it.
+  mark("t2");
+  assert.equal(hasUnread("t2"), true);
+  assert.ok(byId(render(), "sec-2.5"), "Unread has its own section");
+  t1.status = "working";
+  const sections = [...nodes(render())].map(n => uiState(n).id).filter(id => id?.startsWith("sec-"));
+  assert.deepEqual(sections, ["sec-2.5", "sec-2"], "Unread sections come before Working");
+  t1.status = "done";
+  focus = "t2";
+  assert.equal(hasUnread("t2"), false);
+
+  // The focused agent: kept while you stay, cleared when you come back.
+  mark("t2");
+  assert.equal(hasUnread("t2"), true);
+  focus = "t1";
+  assert.equal(hasUnread("t2"), true);
+  assert.equal(hasUnread("t2"), true, "leaving keeps the mark's turn");
+  focus = "t2";
+  assert.equal(hasUnread("t2"), false);
+
+  // A new turn clears it.
+  focus = "t1";
+  mark("t2");
+  t2.status = "working";
+  t2.turn++;
+  render();
+  t2.status = "done";
+  assert.equal(hasUnread("t2"), false);
+
+  // Mark all as read empties the section.
+  mark("t2");
+  focus = "t2";
+  mark("t1");
+  assert.equal(hasUnread("t1"), true);
+  uiState(byId(render(), "mark-all-read")).handlers.on_click({}, p.context);
+  assert.equal(Object.keys(values.get("sidebar.unread")).length, 0);
+  assert.equal(byId(render(), "sec-2.5"), undefined);
+});
+
+test("Spaces shows a space with an agent marked unread", () => {
+  const t1 = { address: "t1", state: "live", status: "done", turn: 1 };
+  const values = new Map([["sidebar.unread", { t1: { left: true, turn: 1 } }]]);
+  const space = { id: "local", name: "Project", status: "idle", tabs: [{ id: "tab" }] };
+  const p = init("sidebar-spaces", {
+    spaces: () => [space],
+    panes: () => [{ pane: "p1", tab: "tab", terminal: "t1" }],
+    terminals: () => [t1],
+    shared: key => values.get(key),
+    setShared: (key, value) => values.set(key, value),
+  });
+  p.herdr.checking = () => false;
+  const red = () => [...nodes(byId(p.instance.render(p.context), "space-local"))].some(n =>
+    uiState(n).calls.some(([method, color]) => method === "bg" && color === p.herdr.theme().ansi1));
+  assert.equal(red(), true);
+  for (const status of ["working", "done", "blocked"]) {
+    space.status = status;
+    assert.equal(red(), false, `${status} outranks unread in a space`);
+  }
+  space.status = "idle";
+  t1.turn++;
+  assert.equal(red(), false, "a new turn ends the mark");
+});
+
+test("a folded group's dot shows working before unread", () => {
+  const values = new Map([["agents.sort", "grouped"], ["sidebar.unread", { t2: { left: true, turn: 1 } }]]);
+  const t1 = { address: "t1", state: "live", status: "working", turn: 1 };
+  const t2 = { address: "t2", state: "live", status: "done", turn: 1 };
+  const p = init("sidebar-agents", {
+    spaces: () => [{ id: "project", name: "Project", tabs: [{ id: "tab" }] }],
+    panes: () => [{ pane: "p1", tab: "tab", terminal: "t1" }, { pane: "p2", tab: "tab", terminal: "t2" }],
+    terminals: () => [t1, t2],
+    agents: () => [t1, t2].map((t, i) => ({ address: t.address, pane: `p${i + 1}`, space: "project", space_name: "Project", tab: "tab", status: t.status === "done" ? "idle" : t.status, seq: i })),
+    shared: key => values.get(key),
+    setShared: (key, value) => values.set(key, value),
+  });
+  p.herdr.checking = () => false;
+  p.instance.folded.add("sp-project");
+  const header = () => [...nodes(byId(p.instance.render(p.context), "sp-project"))];
+  const spins = () => header().some(n => uiState(n).calls.some(([method]) => method === "spin"));
+  const red = () => header().some(n => uiState(n).calls.some(([method, color]) => method === "bg" && color === p.herdr.theme().ansi1));
+  assert.equal(spins(), true);
+  assert.equal(red(), false);
+  t1.status = "done";
+  assert.equal(red(), true, "with nothing running, the unread mark shows");
+});
+
+test("with Clear unread when set to Marked read, only Mark as read or a new turn clears it", () => {
+  const t1 = { address: "t1", state: "live", status: "done", turn: 1 };
+  const t2 = { address: "t2", state: "live", status: "done", turn: 1 };
+  const values = new Map([["sidebar.agents.unreadClear", "manual"]]);
+  let focus = "t1";
+  const p = init("sidebar-agents", {
+    spaces: () => [{ id: "project", name: "Project", tabs: [{ id: "tab" }] }],
+    panes: () => [{ pane: "p1", tab: "tab", terminal: "t1" }, { pane: "p2", tab: "tab", terminal: "t2" }],
+    terminals: () => [t1, t2],
+    agents: () => [t1, t2].map((t, i) => ({ address: t.address, pane: `p${i + 1}`, space: "project", tab: "tab", status: t.status === "done" ? "idle" : t.status, seq: i, focused: focus === t.address })),
+    focused: () => ({ terminal: focus }),
+    shared: key => values.get(key),
+    setShared: (key, value) => values.set(key, value),
+  });
+  p.herdr.checking = () => false;
+  p.context.stop_propagation ??= () => {};
+  const render = () => p.instance.render(p.context);
+  const hasUnread = address => [...nodes(byId(render(), `ag-${address}`))].some(n =>
+    uiState(n).calls.some(([method, color]) => method === "bg" && color === p.herdr.theme().ansi1));
+  const click = (address, id) => {
+    uiState(byId(render(), `ag-${address}`)).handlers.on_hover(true, p.context);
+    uiState(byId(render(), `${id}-${address}`)).handlers.on_click({}, p.context);
+  };
+
+  click("t2", "unread");
+  for (const f of ["t2", "t1", "t2", "t1"]) {
+    focus = f;
+    assert.equal(hasUnread("t2"), true, `viewing does not read it (focus ${f})`);
+  }
+  click("t2", "unread"); // Mark as read: the same button on an unread row
+  assert.equal(hasUnread("t2"), false);
+
+  click("t2", "unread");
+  t2.status = "working";
+  t2.turn++;
+  render();
+  t2.status = "done";
+  assert.equal(hasUnread("t2"), false, "a new turn still clears it");
+
+  // Switching back to clear-on-view while looking at it waits for leave and return.
+  click("t2", "unread");
+  focus = "t2";
+  assert.equal(hasUnread("t2"), true);
+  values.set("sidebar.agents.unreadClear", "view");
+  assert.equal(hasUnread("t2"), true);
+  focus = "t1";
+  assert.equal(hasUnread("t2"), true);
+  focus = "t2";
+  assert.equal(hasUnread("t2"), false);
+});
+
+test("the unread color setting colors the Agents dot", () => {
+  const t2 = { address: "t2", state: "live", status: "done", turn: 1 };
+  const values = new Map([["sidebar.unread", { t2: { left: true, turn: 1 } }], ["sidebar.agents.unreadColor", "blue"]]);
+  const p = init("sidebar-agents", {
+    terminals: () => [t2],
+    agents: () => [{ address: "t2", status: "idle", seq: 1, title: "Agent" }],
+    shared: key => values.get(key),
+    setShared: (key, value) => values.set(key, value),
+  });
+  p.herdr.checking = () => false;
+  const colors = () => [...nodes(byId(p.instance.render(p.context), "ag-t2"))].flatMap(n =>
+    uiState(n).calls.filter(([method]) => method === "bg").map(([, color]) => color));
+  const t = p.herdr.theme();
+  assert.ok(colors().includes(t.ansi4));
+  values.set("sidebar.agents.unreadColor", "purple");
+  assert.ok(colors().includes(t.ansi5));
+  values.delete("sidebar.agents.unreadColor");
+  assert.ok(colors().includes(t.ansi1), "red by default");
 });

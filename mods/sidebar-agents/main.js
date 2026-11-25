@@ -1,5 +1,5 @@
 // Agents in grouped or priority views; parents take their most urgent sub-agent's place.
-// A viewed done agent stays in Done until left.
+// A viewed done agent stays in Done until left. An idle agent can be marked unread.
 
 import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
@@ -7,12 +7,13 @@ import { agents, terminals, panes, focused, spaces, run, theme, shared, setShare
 import {
   find, sidebarPx, narrow, shown, GLYPH, SEG_GAP, SCROLL_GUTTER, fit, segmentBudgets,
   TREE_STROKE_WIDTH, treeLines, machineOf, keepTerminal, viewedTerminalStatuses, mark, statusDot,
+  unreadStatuses, markUnread, markRead, unreadColor,
   AGENT_SORT, EXPAND_CHILDREN, SHOW_GIT_BRANCH, SHOW_GIT_CHANGES, SHOW_GIT_SYNC, enabled, statusAtStart,
   GIT_DIRTY_EVERY, GIT_REFS_EVERY, gitKey, checkGit, readGitStore, gitRecordOf, writeGitStore,
 } from "./shared.js";
-import { settingsButton, settingsDialog } from "./settings.js";
+import { settingsButton, settingsDialog, settingsOverlay } from "./settings.js";
 
-const openSettings = () => openOverlay({ mod: "sidebar-agents", kind: "dialog", width: 510, height: 590, props: { sidebarSettings: true } });
+const openSettings = () => openOverlay(settingsOverlay("sidebar-agents"));
 
 const AGENT_PADDING = 8;
 const AGENT_GAP = 8;
@@ -50,7 +51,12 @@ function title(tab, l) {
   const telling = live && live !== (l?.terminal ?? l?.address) && live !== prog && !path && !live.includes("@") && live.toLowerCase() !== l?.program?.key;
   return (tab.name === prog || !tab.named) && telling ? live : tab.name;
 }
-const RANK = { blocked: 4, done: 3, working: 2, idle: 1 };
+// Section order: what waits for you before what runs. An unread agent waits too.
+const RANK = { blocked: 4, done: 3, unread: 2.5, working: 2, idle: 1 };
+// One dot for many agents (a folded group or tree) shows activity before a
+// mark you left yourself, as Spaces and the pane header do.
+const DOT_RANK = { blocked: 4, done: 3, working: 2, unread: 1.5, idle: 1 };
+const topStatus = statuses => statuses.reduce((m, s) => ((DOT_RANK[s] ?? 0) > (DOT_RANK[m] ?? 0) ? s : m), null);
 // Prefer the pane's display status when available. A child without a pane
 // keeps the core's Done state, as in Spaces.
 const kidStatus = (k, listed) => {
@@ -62,8 +68,9 @@ const SORTS = [
   { id: "grouped", label: "Grouped by space", icon: "layers" },
 ];
 const sortOf = () => SORTS.find((s) => s.id === shared(AGENT_SORT)) ?? SORTS[0];
-const SECTION = { 4: "Needs you", 3: "Done", 2: "Working", 1: "Idle" };
-const SECTION_STATUS = { 4: "blocked", 3: "done", 2: "working" };
+const SECTION = { 4: "Needs you", 3: "Done", 2.5: "Unread", 2: "Working", 1: "Idle" };
+const SECTION_STATUS = { 4: "blocked", 3: "done", 2.5: "unread", 2: "working" };
+const tone = (t, status) => status === "unread" ? unreadColor(t) : t[status];
 
 function duration(ms) {
   const m = Math.floor(ms / 60000);
@@ -133,7 +140,7 @@ export default class Agents extends View {
   updateBadge(list) {
     if (checking()) return;
     // Count actual agents before grouping/folding, not the parent's promoted rank.
-    const count = list.filter(a => a.status === "blocked" || a.status === "done").length;
+    const count = list.filter(a => a.status === "blocked" || a.status === "done" || a.status === "unread").length;
     const badge = count ? String(count) : null;
     if (badge === this.badge) return;
     this.badge = badge;
@@ -273,12 +280,12 @@ export default class Agents extends View {
       ]);
   }
 
-  // Stamps agents whose state changed. Done and idle count as one: looking at a
-  // finished agent turns done into idle, and looking isn't the agent doing anything.
+  // Stamps agents whose state changed. Done, unread and idle count as one: looking
+  // at or marking a finished agent isn't the agent doing anything.
   track(list, now) {
     let dirty = false;
     for (const a of list) {
-      const s = a.status === "done" ? "idle" : a.status;
+      const s = a.status === "done" || a.status === "unread" ? "idle" : a.status;
       if (this.changed[a.address]?.s === s) continue;
       this.changed[a.address] = { s, at: now };
       dirty = true;
@@ -463,6 +470,7 @@ export default class Agents extends View {
   status(t, a, compact = false) {
     if (a.status === "blocked" && !compact) return div().flex_none().px(6).h(18).rounded(5).bg(t.blocked + "26").text_size(10.5).font_semibold().text_color(t.blocked).flex().items_center().child("Needs you");
     if (a.status === "done") return statusDot(t.done ?? t.dim);
+    if (a.status === "unread") return statusDot(unreadColor(t));
     return mark(a.status, t) ?? statusDot(t.dim + "00");
   }
 
@@ -479,10 +487,12 @@ export default class Agents extends View {
     const showSync = enabled(SHOW_GIT_SYNC);
     const px = sidebarPx();
     const sort = sortOf();
-    let list = [...agents()];
-    this.listed = new Map(list.map((a) => [a.address, a.status]));
     const focus = focused();
-    const all = viewedTerminalStatuses(terminals(), focus?.shown);
+    const focusAddress = focus?.shown ?? focus?.terminal ?? focus?.agent ?? null;
+    const all = unreadStatuses(viewedTerminalStatuses(terminals(), focus?.shown), focusAddress);
+    const unread = new Set(all.filter(term => term.status === "unread").map(term => term.address));
+    let list = agents().map(a => a.status === "idle" && unread.has(a.address) ? { ...a, status: "unread" } : a);
+    this.listed = new Map(list.map((a) => [a.address, a.status]));
     // `agents()` requires a pane. Use core reports for agents that have
     // neither a pane nor a row in an attached agent's tree.
     const ps = panes();
@@ -571,7 +581,7 @@ export default class Agents extends View {
       const childRanks = this.tree(a.address).map(({ t }) => {
         const status = kidStatus(t, this.listed);
         // Done belongs to the child. A plain terminal header has no status of its own.
-        return status === "done" && !a.terminalParent ? RANK.idle : (RANK[status] ?? 0);
+        return (status === "done" || status === "unread") && !a.terminalParent ? RANK.idle : (RANK[status] ?? 0);
       });
       return [a.address, Math.max(this.rank(a), ...childRanks)];
     }));
@@ -609,7 +619,7 @@ export default class Agents extends View {
     // When folded, show the child count and use the most urgent child's color.
     const fold = (a, subs) => {
       const sts = subs.map((s) => kidStatus(s.t, this.listed));
-      const top = sts.reduce((m, s) => ((RANK[s] ?? 0) > (RANK[m] ?? 0) ? s : m), null);
+      const top = topStatus(sts);
       const open = childrenOpen(a.address);
       return div()
         .id(`fold-${a.address}`)
@@ -621,7 +631,7 @@ export default class Agents extends View {
         .items_center()
         .rounded(4)
         .text_size(11)
-        .text_color(open ? t.muted : (t[top] ?? t.muted))
+        .text_color(open ? t.muted : (tone(t, top) ?? t.muted))
         .cursor_default()
         .hover((s) => s.bg(t.hover).text_color(t.foreground))
         .on_click((_e, cx) => toggleChildren(a.address, cx))
@@ -691,6 +701,26 @@ export default class Agents extends View {
           cx.notify();
         })
         .child(svg(`mods/workspace-chrome/${isPinned ? "pin-off" : "pin"}.svg`).size(13));
+      // An idle agent (one you looked at) can go back to wait for you, and back again.
+      const isUnread = a.status === "unread";
+      const unreadButton = div()
+        .id(`unread-${a.address}`)
+        .flex_none()
+        .p(2)
+        .rounded(4)
+        .text_color(t.dim)
+        .cursor_default()
+        .hover((s) => s.bg(t.hover).text_color(t.foreground))
+        .tooltip(isUnread ? "Mark as read" : "Mark as unread")
+        .on_click((_e, cx) => {
+          cx.stop_propagation();
+          if (isUnread) markRead([a.address]);
+          else markUnread(a.address, focusAddress);
+          this.hovered = null;
+          cx.notify();
+        })
+        .child(svg(isUnread ? "mods/workspace-chrome/check.svg" : "mods/sidebar-agents/eye-off.svg").size(13));
+      const canMark = !a.terminalParent && (isUnread || a.status === "idle");
       // The program and state flank the working folder and machine details.
       const cwd = cwdOf.get(a.pane) ?? a.cwd ?? null;
       const folder = a.pane_name || (a.pane || a.terminalParent ? base(cwd) || cwd || a.space_name || label(a) : label(a));
@@ -736,6 +766,7 @@ export default class Agents extends View {
             .child(h_flex().flex_1().min_w(0).gap(3).items_center()
               .child(div().min_w(0).truncate().text_color(idle ? t.muted : t.foreground).child(folder))
               .when(subs.length > 0, el => el.child(fold(a, subs))))
+            .when(canMark && this.hovered === a.address, (el) => el.child(unreadButton))
             .when(!a.terminalParent && this.hovered === a.address, (el) => el.child(pin))
             .when(this.hovered !== a.address && Boolean(when), (el) => el.child(div().flex_none().text_size(11).text_color(t.dim).child(duration(now - when)))))
           .child(h_flex().h(16).w_full().min_w(0).gap(4).items_center()
@@ -758,7 +789,7 @@ export default class Agents extends View {
     // A group's header; it folds the group. Folded, it says how many and the most urgent state.
     const header = (g) => {
       const open = !this.folded.has(g.id);
-      const top = g.members.reduce((m, a) => ((RANK[a.status] ?? 0) > (RANK[m] ?? 0) ? a.status : m), null);
+      const top = topStatus(g.members.map(a => a.status));
       return h_flex()
         .id(g.id)
         .px(8)
@@ -775,9 +806,24 @@ export default class Agents extends View {
           open ? this.folded.add(g.id) : this.folded.delete(g.id);
           cx.notify();
         })
-        .child(div().truncate().text_color(t[g.status] ?? t.dim).child(g.label))
+        .child(div().truncate().text_color(tone(t, g.status) ?? t.dim).child(g.label))
         .when(byPriority || !open, (el) => el.child(div().text_color(t.dim).child(String(g.members.length))))
         .child(div().flex_1())
+        .when(g.status === "unread", (el) => el.child(div()
+          .id("mark-all-read")
+          .flex_none()
+          .p(2)
+          .rounded(4)
+          .text_color(t.dim)
+          .cursor_default()
+          .hover((s) => s.bg(t.hover).text_color(t.foreground))
+          .tooltip("Mark all as read")
+          .on_click((_e, cx) => {
+            cx.stop_propagation();
+            markRead(g.members.map(a => a.address));
+            cx.notify();
+          })
+          .child(svg("mods/sidebar-agents/read-all.svg").size(13))))
         .when(!open, (el) => el
           .when(!byPriority && top && top !== "idle", (el) => el.child(this.status(t, { status: top }, true)))
           .child(svg("mods/workspace-chrome/chevron-right.svg").size(11).flex_none().text_color(t.dim)));

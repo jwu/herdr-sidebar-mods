@@ -29,6 +29,10 @@ export const SHOW_GIT_CHANGES = "sidebar.git.showChanges";
 export const SHOW_GIT_SYNC = "sidebar.git.showSync";
 export const EXPAND_CHILDREN = "sidebar.agents.expandChildren";
 export const AGENT_SORT = "agents.sort";
+// "view": leaving a marked agent and coming back reads it. "manual": only Mark
+// as read does. Either way a new turn or an ended terminal clears the mark.
+export const UNREAD_CLEAR = "sidebar.agents.unreadClear";
+export const unreadClearsOnView = () => shared(UNREAD_CLEAR) !== "manual";
 export const enabled = key => shared(key) !== false;
 export const statusAtStart = () => shared(STATUS_POSITION_KEY) === "start";
 
@@ -84,6 +88,7 @@ export function mark(status, t) {
   if (status === "blocked") return div().size(14).flex_none().rounded(4).bg(t.blocked + "26").text_size(10.5).font_bold().text_color(t.blocked).flex().items_center().justify_center().child("!");
   if (status === "idle") return div().size(7).mx(3).flex_none().rounded(4).border(1.5).border_color(t.idle ?? t.dim);
   if (status === "done") return statusDot(t.done);
+  if (status === "unread") return statusDot(unreadColor(t));
   return null;
 }
 
@@ -137,6 +142,66 @@ export function viewedTerminalStatuses(all, shown) {
   return all.map(term => term.state === "live" && term.status === "done" &&
     (term === current || (turnOf(term) != null && viewed[term.address] === turnOf(term)))
     ? { ...term, status: "idle" } : term);
+}
+
+// Marked unread by hand: an idle terminal shows as Unread until focus leaves
+// it and comes back, or it starts another turn. Each mark says whether focus
+// has left since, so marking the terminal you are on doesn't clear it at once.
+export const UNREAD_KEY = "sidebar.unread";
+// Settings offer these theme colors for unread; green is Done's.
+export const UNREAD_COLOR = "sidebar.agents.unreadColor";
+export const UNREAD_COLORS = [["red", "Red", "ansi1"], ["yellow", "Yellow", "ansi3"], ["blue", "Blue", "ansi4"], ["purple", "Purple", "ansi5"]];
+export const unreadColor = t => t[(UNREAD_COLORS.find(([id]) => id === shared(UNREAD_COLOR)) ?? UNREAD_COLORS[0])[2]] ?? t.blocked;
+const unreadMarks = () => {
+  const marks = shared(UNREAD_KEY);
+  return marks && typeof marks === "object" && !Array.isArray(marks) ? marks : {};
+};
+
+// The core keeps reporting a looked-at agent as done, so a new turn shows as a
+// changed turn number rather than as a status.
+const turnOf = term => term?.turn ?? term?.status_ms ?? null;
+
+export function markUnread(address, active) {
+  const turn = turnOf(terminals().find(term => term.address === address));
+  setShared(UNREAD_KEY, { ...unreadMarks(), [address]: { left: address !== active, turn } });
+}
+
+export function markRead(addresses) {
+  const marks = { ...unreadMarks() };
+  for (const address of addresses) delete marks[address];
+  setShared(UNREAD_KEY, marks);
+}
+
+const RESTING = new Set(["idle", "done"]);
+
+// Statuses after viewedTerminalStatuses, with marked resting terminals as "unread".
+// A terminal missing from the list keeps its mark: the list is empty right
+// after a start.
+export function unreadStatuses(all, active) {
+  const marks = unreadMarks();
+  const byAddress = new Map(all.map(term => [term.address, term]));
+  const onView = unreadClearsOnView();
+  let next = null;
+  for (const [address, mark] of Object.entries(marks)) {
+    const term = byAddress.get(address);
+    if (!term) continue;
+    const here = address === active;
+    const spent = term.state !== "live" || !RESTING.has(term.status) || turnOf(term) !== (mark?.turn ?? null) ||
+      (onView && mark?.left && here);
+    // `left` follows focus, so switching to clear-on-view while looking at a
+    // marked agent waits until you leave it and come back.
+    if (spent) {
+      next ??= { ...marks };
+      delete next[address];
+    } else if (Boolean(mark?.left) === here) {
+      next ??= { ...marks };
+      next[address] = { ...mark, left: !here };
+    }
+  }
+  if (next && !checking()) setShared(UNREAD_KEY, next);
+  const live = next ?? marks;
+  return all.map(term => term.state === "live" && RESTING.has(term.status) && live[term.address]
+    ? { ...term, status: "unread" } : term);
 }
 
 export const gitKey = (on, cwd) => JSON.stringify([on ?? null, cwd]);
