@@ -18,9 +18,26 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: '24'
+      - name: Check the mods' VERSION matches the tag
+        run: |
+          for f in mods/sidebar-spaces/update.js mods/sidebar-agents/update.js; do
+            grep -q "^export const VERSION = \"${GITHUB_REF_NAME#v}\";$" "$f" || { echo "$f VERSION is not ${GITHUB_REF_NAME#v}"; exit 1; }
+          done
       - name: Test mods
         run: node --test tests/*.test.mjs
+      - name: Build notes and archive
+        run: |
+          v=${GITHUB_REF_NAME#v}
+          prev=$(git ls-remote --tags --refs origin 'v*' | sed 's#.*refs/tags/##' | sort -V | awk -v t="$GITHUB_REF_NAME" '$0 == t { print p; exit } { p = $0 }')
+          { node scripts/changelog.mjs notes "$v"
+            [ -n "$prev" ] && printf '\n**Full Changelog**: https://github.com/%s/compare/%s...%s\n' "$GITHUB_REPOSITORY" "$prev" "$GITHUB_REF_NAME"
+          } > notes.md
+          name="herdr-ultimate-sidebar-$GITHUB_REF_NAME"
+          mkdir -p "dist/$name"
+          cp -R mods README.md LICENSE CHANGELOG.md "dist/$name/"
+          tar -czf "$name.tar.gz" -C dist "$name"
+          sha256sum "$name.tar.gz" > SHA256SUMS
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes
+        run: gh release create "$GITHUB_REF_NAME" --verify-tag --notes-file notes.md herdr-ultimate-sidebar-*.tar.gz SHA256SUMS
