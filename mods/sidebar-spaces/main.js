@@ -35,6 +35,14 @@ const SPACE_ICON_WIDTH = 20;
 const FOLDER_WIDTH = 16;
 const BRANCH_WIDTH = 13;
 const PORT_ROW_HEIGHT = 18;
+const DRAG_THRESHOLD = 4;
+
+function startDrag(press, position) {
+  if (!press || press.dragging) return false;
+  if (Math.hypot(position.x - press.position.x, position.y - press.position.y) < DRAG_THRESHOLD) return false;
+  press.dragging = true;
+  return true;
+}
 
 const SPACE_TREE_INSET = SPACE_PADDING + (SPACE_ICON_WIDTH - TREE_STROKE_WIDTH) / 2;
 const statusOffset = () => statusAtStart() ? SPACE_STATUS_WIDTH + SPACE_GAP : 0;
@@ -139,8 +147,8 @@ export default class Spaces extends View {
     // worktree appears under its repo instead of jumping there.
     this.shown = new Set(spaces().map((s) => s.id));
     this.born = {};
-    this.pressed = null;
-    this.over = null;
+    this.spacePress = null;
+    this.spaceOver = null;
     this.scroll = ScrollHandle.new();
     this.scrollSize = null;
     this.activeAt = -1;
@@ -182,7 +190,7 @@ export default class Spaces extends View {
     let order;
     try { order = JSON.parse(localStorage.getItem("machines.order") ?? "[]"); } catch {}
     this.order = Array.isArray(order) ? [...new Set(order.filter(m => m === null || typeof m === "string"))] : [];
-    this.machinePress = null; // { m } while a header's press may become a reorder
+    this.machinePress = null; // { m, position, dragging } for the current header gesture
     this.machineOver = null; // { m } the header under the pointer
     // Initialize render state even in a check, but never run helpers or touch files.
     this.cup = "off"; // "off" | "on" | "busy"
@@ -859,58 +867,61 @@ export default class Spaces extends View {
             .on_click((_e, cx) => { cx.stop_propagation(); this.reconnect(machine, cx); })
             .child(repair?.busy ? "Connecting…" : "Connect"))))
         .when(connected, el => el.child(div().id(`machine-add-${m ?? "local"}`).w(16).h(18).flex_none().flex().items_center().justify_center()
-          .rounded(4).hover(s => s.bg(t.hover).text_color(t.foreground)).tooltip("New space there")
+          .rounded(4).cursor_pointer().hover(s => s.bg(t.hover).text_color(t.foreground)).tooltip("New space there")
           .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
           .on_click((_e, cx) => { cx.stop_propagation(); run("space.new", { machine: m ?? "" }); })
           .child(svg("mods/workspace-chrome/plus.svg").size(12).flex_none())))
         .child(div().size(6).rounded(3).flex_none().bg(connected ? t.ansi2 : t.muted))
         .child(div().w(SPACE_STATUS_WIDTH).flex_none().flex().justify_center()
           .child(svg(`mods/workspace-chrome/chevron-${folded ? "right" : "down"}.svg`).size(11).flex_none()));
-      // A press that travels to another header reorders the machines; a press
-      // that stays on its own folds it. The carried header fades, and the
-      // header under the pointer shows the gap it would land in.
       const from = machineNames.indexOf(this.machinePress?.m);
-      const carrying = from !== -1 && this.machineOver?.m !== this.machinePress?.m;
+      const dragging = this.machinePress?.dragging;
       const drop = () => div().absolute().left(0).right(0).h(2).bg(t.accent)
         .when(from < machineNames.indexOf(m), (el) => el.bottom(0))
         .when(from > machineNames.indexOf(m), (el) => el.top(0));
-      const press = (_e, cx) => { this.machinePress = { m }; this.machineOver = { m }; cx.notify(); };
-      const over = (cx) => {
-        if (this.machinePress && this.machineOver?.m !== m) {
-          this.machineOver = { m };
-          cx.notify();
-        }
-      };
-      const release = (cx) => {
-        const start = this.machinePress, onto = this.machineOver;
-        this.machinePress = null;
-        this.machineOver = null;
-        if (start && onto && onto.m !== start.m) this.moveMachine(start.m, onto.m, machineNames);
-        else if (start) toggle(cx);
+      const press = (e, cx) => {
+        this.machinePress = { m, position: e.position, dragging: false };
+        this.machineOver = { m };
         cx.notify();
       };
-      const drag = (el) => el
+      const over = (e, cx) => {
+        if (!this.machinePress) return;
+        const started = startDrag(this.machinePress, e.position);
+        if (!started && this.machineOver?.m === m) return;
+        this.machineOver = { m };
+        cx.notify();
+      };
+      const release = (e, cx) => {
+        startDrag(this.machinePress, e.position);
+        const start = this.machinePress;
+        this.machinePress = null;
+        this.machineOver = null;
+        if (start?.dragging && start.m !== m) this.moveMachine(start.m, m, machineNames);
+        else if (start && !start.dragging && start.m === m) toggle(cx);
+        cx.notify();
+      };
+      const drag = (el) => el[dragging || this.spacePress?.dragging ? "cursor_grabbing" : "cursor_default"]()
         .on_mouse_down("left", press)
-        .on_mouse_move((_e, cx) => over(cx))
-        .on_mouse_up("left", (_e, cx) => release(cx));
+        .on_mouse_move(over)
+        .on_mouse_up("left", release);
       const head = collapsed
         ? drag(v_flex().id(`machine-${m ?? "local"}`).relative().flex_none().mt(4).w(RAIL_CELL).h(30).items_center().justify_center().rounded(4).bg(t.surface)
           .tooltip(login ? `${m} needs a login: run ${login}. Click for Copy.` : m ? `${m} · ${connected ? "connected" : (machine?.state ?? "asleep").replace(/_/g, " ")}` : "Local")
-          .cursor_pointer().hover(s => s.bg(t.hover))
-          .when(this.machinePress?.m === m && carrying, (el) => el.opacity(0.5))
-          .when(carrying && this.machineOver?.m === m, (el) => el.child(drop()))
+          .hover(s => s.bg(t.hover))
+          .when(dragging && this.machinePress.m === m, (el) => el.opacity(0.5))
+          .when(dragging && this.machinePress.m !== m && this.machineOver?.m === m, (el) => el.child(drop()))
           .child(div().relative().flex_none().child(icon()).when(Boolean(m), el => el.child(badge()))
             .when(m === null && this.cup === "on", el => el.child(div().absolute().right(-3).bottom(-2).size(6).rounded(3).border_1().border_color(t.surface).bg(t.ansi3))))
           .when(machine?.keeps_running_after_logout === false, el => el.child(warning())))
         : drag(v_flex().id(`machine-${m ?? "local"}`).relative().flex_none().mt(4).mb(1).pl(collapsed ? 0 : 18).pr(collapsed ? 0 : SCROLL_GUTTER).pt(5).pb(6).bg(t.surface)
           .text_size(13.5).font_medium().text_color(connected ? t.foreground : t.muted)
-          .cursor_pointer().hover(s => s.bg(t.hover))
-          .when(this.machinePress?.m === m && carrying, (el) => el.opacity(0.5))
-          .when(carrying && this.machineOver?.m === m, (el) => el.child(drop()))
+          .hover(s => s.bg(t.hover))
+          .when(dragging && this.machinePress.m === m, (el) => el.opacity(0.5))
+          .when(dragging && this.machinePress.m !== m && this.machineOver?.m === m, (el) => el.child(drop()))
           .child(row1)
           .when(enabled(SHOW_USAGE), el => el.child(this.usage(m, t, connected))));
       const empty = h_flex().id(`machine-new-${m ?? "local"}`).h(28).flex_none().ml(collapsed ? 0 : SPACE_MARGIN).mr(collapsed ? 0 : SCROLL_GUTTER).my(1).px(collapsed ? 0 : SPACE_PADDING).gap(7).items_center().rounded(4)
-        .text_size(12).text_color(t.dim).hover(s => s.bg(t.hover).text_color(t.foreground))
+        .text_size(12).text_color(t.dim).cursor_pointer().hover(s => s.bg(t.hover).text_color(t.foreground))
         .on_click(() => run("space.new", { machine: m ?? "" }))
         .when(collapsed, el => el.w(RAIL_CELL).rounded(4).justify_center().tooltip(`New space on ${m ?? "Local"}`)
           .child(h_flex().size(18).rounded(5).border_1().border_color(t.dim).items_center().justify_center()
@@ -1063,7 +1074,8 @@ export default class Spaces extends View {
       ]);
   }
 
-  row({ w, i, g, tree }, t, terminalCount) {
+  row(row, t, terminalCount) {
+    const { w, g, tree } = row;
     const px = sidebarPx();
     const id = `space-${w.id}`;
     const leading = statusAtStart();
@@ -1074,9 +1086,7 @@ export default class Spaces extends View {
       .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
       .on_mouse_up("left", (_e, cx) => {
         cx.stop_propagation();
-        this.pressed = null;
-        this.over = null;
-        cx.notify();
+        this.cancelDrag(cx);
       })
       .on_click((_e, cx) => {
         cx.stop_propagation();
@@ -1101,43 +1111,13 @@ export default class Spaces extends View {
       ...(showSync && g?.ahead > 0 ? [{ text: `\u2191${g.ahead}`, color: t.ansi2, fixed: true }] : []),
       ...(showSync && g?.behind > 0 ? [{ text: `\u2193${g.behind}`, color: t.ansi1, fixed: true }] : []),
     ], room, fold);
-    const fromIndex = this.pressed === null ? -1 : spaces().findIndex(s => s.id === this.pressed);
-    return v_flex()
+    return this.spaceRowDrag(v_flex()
       .relative()
-      .id(`space-${w.id}`)
+      .id(id)
       .px(SPACE_PADDING)
       .h(rowHeight({ tree }))
       .flex_none()
-      .justify_center()
-      .when(this.pressed !== null && this.over === w.id && this.pressed !== w.id, (el) => el.child(
-        div().absolute().left(0).right(0).h(2).bg(t.accent)
-          .when(fromIndex < i, line => line.bottom(0))
-          .when(fromIndex > i, line => line.top(0)),
-      ))
-      .on_mouse_down("left", (_e, cx) => {
-        this.pressed = w.id;
-        this.over = w.id;
-        cx.notify();
-      })
-      .on_mouse_move((_e, cx) => {
-        const source = spaces().find(s => s.id === this.pressed);
-        const over = source && (source.machine ?? null) === (w.machine ?? null) ? w.id : null;
-        if (this.pressed !== null && this.over !== over) {
-          this.over = over;
-          cx.notify();
-        }
-      })
-      .on_mouse_up("left", (_e, cx) => {
-        const from = this.pressed;
-        const over = this.over;
-        this.pressed = null;
-        this.over = null;
-        if (from !== null && over === w.id && from !== w.id) {
-          const index = spaces().findIndex(s => s.id === w.id);
-          if (index !== -1) run("space.move", { id: from, index: index + 1 });
-        } else if (from === w.id) run("space.select", { id: w.id });
-        cx.notify();
-      })
+      .justify_center(), row, t)
       .on_mouse_down("right", () => this.menu(w))
       .child(
         h_flex()
@@ -1169,7 +1149,7 @@ export default class Spaces extends View {
       .rounded(4)
       .when(on, (el) => el.bg(t.ansi5 + "33"))
       .when(!on, (el) => el.hover((s) => s.bg(t.hover)))
-      .when(this.pressed === w.id && this.over !== w.id, (el) => el.opacity(0.5))
+      .when(this.spacePress?.dragging && this.spacePress.id === w.id, (el) => el.opacity(0.5))
       .child(this.row(row, t, terminalCount))
       .when(has, el => el.child(this.portRow(w, t)))
       .when(has && terminalCount > 0 && this.terminalsOpen(`space-${w.id}`), el => el.child(
@@ -1203,17 +1183,12 @@ export default class Spaces extends View {
       // The row under a space's ports selects that space when clicked on its
       // air; a port itself stops the press so it only opens (or copies) and
       // leaves the current space alone.
-      .on_mouse_down("left", (_e, cx) => {
-        this.pressed = w.id;
-        this.over = w.id;
-        cx.notify();
-      })
-      .on_mouse_up("left", (_e, cx) => {
-        const same = this.pressed === w.id;
-        this.pressed = null;
-        this.over = null;
-        if (same) run("space.select", { id: w.id });
-        cx.notify();
+      .on_mouse_down("left", (e, cx) => this.pressSpace(w, e.position, cx))
+      .on_mouse_up("left", (e, cx) => {
+        const press = this.spacePress;
+        startDrag(press, e.position);
+        this.cancelDrag(cx);
+        if (press?.id === w.id && !press.dragging) run("space.select", { id: w.id });
       })
       .on_mouse_down("right", () => this.menu(w))
       .children(ports.flatMap((p, i) => [
@@ -1227,13 +1202,7 @@ export default class Spaces extends View {
           .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
           .on_mouse_up("left", (_e, cx) => {
             cx.stop_propagation();
-            // A drag that started on a space row and ended on a port leaves
-            // its press behind when the port swallows the release.
-            if (this.pressed !== null) {
-              this.pressed = null;
-              this.over = null;
-              cx.notify();
-            }
+            this.cancelDrag(cx);
           })
           .on_click((_e, cx) => {
             if (local) cx.open_url(`http://localhost:${p.number}/`);
@@ -1246,19 +1215,20 @@ export default class Spaces extends View {
       ]));
   }
 
-  compact({ w }, t, number) {
+  compact(row, t, number) {
+    const { w } = row;
     const leading = statusAtStart();
-    return railCell(h_flex()
+    return railCell(this.spaceRowDrag(h_flex()
       .id(`space-${w.id}`)
       .relative()
       .w(RAIL_CELL)
       .h(26)
       .rounded(4)
       .justify_center()
-      .items_center()
+      .items_center(), row, t)
       .when(w.active, (el) => el.bg(t.ansi5 + "33"))
       .when(!w.active, (el) => el.hover((s) => s.bg(t.hover)))
-      .on_click(() => run("space.select", { id: w.id }))
+      .when(this.spacePress?.dragging && this.spacePress.id === w.id, (el) => el.opacity(0.5))
       .child(div().text_color(w.active ? t.foreground : t.muted).child(String(number)))
       .child(div().absolute().when(leading, el => el.left(5)).when(!leading, el => el.right(5))
         .text_color(tone(t, w.status)).child(glyph(w.status))));
@@ -1300,14 +1270,58 @@ export default class Spaces extends View {
           .child(div().id("space-new").size(26).flex_none().flex().items_center().justify_center().rounded(6).hover(s => s.bg(t.hover))
             .on_click(() => run("space.new")).child(svg("mods/workspace-chrome/plus.svg").size(14)))))
       .child(this.followDrag(v_flex()).flex_1().min_h(0).pb(14).overflow_y_scrollbar().mode("always").track_scroll(this.scroll)
+        .when(Boolean(this.machinePress?.dragging || this.spacePress?.dragging), el => el.cursor_grabbing())
         .on_size_change((size, cx) => {
           // Herdr can report the same viewport size again after a list update.
           if (size.width === this.scrollSize?.width && size.height === this.scrollSize?.height) return;
           this.scrollSize = size;
           if (this.activeAt >= 0) { this.scroll.scroll_to_item(this.activeAt); cx.notify(); }
         })
-        .on_mouse_up("left", (_e, cx) => { this.pressed = null; this.machinePress = null; this.machineOver = null; cx.notify(); })
+        .on_mouse_up("left", (_e, cx) => this.cancelDrag(cx))
         .children(list));
+  }
+
+  pressSpace(w, position, cx) {
+    this.spacePress = { id: w.id, machine: w.machine ?? null, position, dragging: false };
+    this.spaceOver = w.id;
+    cx.notify();
+  }
+
+  spaceRowDrag(el, { w, i }, t) {
+    const press = this.spacePress;
+    const fromIndex = press?.dragging ? spaces().findIndex(s => s.id === press.id) : -1;
+    return el[press?.dragging || this.machinePress?.dragging ? "cursor_grabbing" : "cursor_default"]()
+      .when(fromIndex !== -1 && this.spaceOver === w.id && press.id !== w.id, row => row.child(
+        div().absolute().left(0).right(0).h(2).bg(t.accent)
+          .when(fromIndex < i, line => line.bottom(0))
+          .when(fromIndex > i, line => line.top(0)),
+      ))
+      .on_mouse_down("left", (e, cx) => this.pressSpace(w, e.position, cx))
+      .on_mouse_move((e, cx) => {
+        const press = this.spacePress;
+        if (!press) return;
+        const started = startDrag(press, e.position);
+        const over = press.machine === (w.machine ?? null) ? w.id : null;
+        if (!started && this.spaceOver === over) return;
+        this.spaceOver = over;
+        cx.notify();
+      })
+      .on_mouse_up("left", (e, cx) => {
+        const press = this.spacePress;
+        if (!press) return;
+        startDrag(press, e.position);
+        this.cancelDrag(cx);
+        if (!press.dragging) {
+          if (press.id === w.id) run("space.select", { id: w.id });
+          return;
+        }
+        if (press.id === w.id || press.machine !== (w.machine ?? null)) return;
+        const entries = spaces();
+        const index = entries.findIndex(s => s.id === w.id);
+        if (index !== -1 && entries.some(s => s.id === press.id && (s.machine ?? null) === press.machine)) {
+          run("space.move", { id: press.id, index: index + 1 });
+        }
+      });
   }
 
   // A drag let go outside the list (over a terminal, or outside the window)
@@ -1316,7 +1330,7 @@ export default class Spaces extends View {
   // keeps the list's own release.
   // Only registered while a press is held, so ordinary pointer moves cost nothing.
   followDrag(el) {
-    if (this.pressed === null && !this.machinePress) return el;
+    if (!this.spacePress && !this.machinePress) return el;
     if (typeof el.on_window_mouse_up !== "function" || typeof el.on_window_mouse_move !== "function") return el;
     const outside = (e) => {
       const b = e.bounds, p = e.position;
@@ -1325,21 +1339,22 @@ export default class Spaces extends View {
     return el
       .on_window_mouse_up("left", (e, cx) => { if (outside(e)) this.cancelDrag(cx); })
       .on_window_mouse_move((e, cx) => {
-        if (this.pressed === null && !this.machinePress) return;
+        if (!this.spacePress && !this.machinePress) return;
         // No left button on a move: it was released outside the window.
-        if (e.pressed_button !== "left") this.cancelDrag(cx);
-        else if (outside(e) && (this.over !== null || this.machineOver)) {
-          this.over = null;
+        if (e.pressed_button !== "left") { this.cancelDrag(cx); return; }
+        const started = startDrag(this.spacePress ?? this.machinePress, e.position);
+        if (outside(e) && (this.spaceOver !== null || this.machineOver)) {
+          this.spaceOver = null;
           this.machineOver = null;
           cx.notify();
-        }
+        } else if (started) cx.notify();
       });
   }
 
   cancelDrag(cx) {
-    if (this.pressed === null && !this.machinePress) return;
-    this.pressed = null;
-    this.over = null;
+    if (!this.spacePress && !this.machinePress) return;
+    this.spacePress = null;
+    this.spaceOver = null;
     this.machinePress = null;
     this.machineOver = null;
     cx.notify();

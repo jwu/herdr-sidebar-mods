@@ -234,30 +234,138 @@ test("Spaces shortcuts and rail numbers follow the rows shown after reordering o
   }
 });
 
-test("Spaces preserves its original sidebar reorder and click-to-select gestures", () => {
+test("Spaces distinguishes a machine click from a drag before reaching another header", () => {
+  const motion = (x, y) => ({ position: { x, y }, pressed_button: "left" });
+  for (const width of [300, 76]) {
+    const p = spacesPanel();
+    p.data.width = width;
+    const root = p.render();
+    const local = uiState(byId(root, "machine-local")).handlers;
+    const remote = uiState(byId(root, "machine-vps")).handlers;
+    const drops = [];
+    p.instance.moveMachine = (from, to) => drops.push([from, to]);
+
+    const press = () => local["on_mouse_down:left"](motion(20, 40), p.context);
+    const release = () => local["on_mouse_up:left"](motion(20, 40), p.context);
+
+    press();
+    assert.ok(call(byId(p.render(), "machine-local"), "cursor_default"));
+    local.on_mouse_move(motion(24, 40), p.context);
+    const dragging = p.render();
+    assert.equal(call(byId(dragging, "machine-local"), "opacity")?.[1], 0.5);
+    assert.ok(call(byId(dragging, "machine-local"), "cursor_grabbing"));
+    assert.ok(call(byId(dragging, "machine-vps"), "cursor_grabbing"));
+    local.on_mouse_move(motion(20, 40), p.context);
+    release();
+    assert.ok(call(byId(p.render(), "machine-local"), "cursor_default"));
+    assert.equal(p.instance.folded.has(null), false);
+    assert.deepEqual(drops, []);
+
+    press();
+    const pressedRoot = p.render();
+    const windowMove = [...nodes(pressedRoot)].map(uiState).find(s => s.handlers.on_window_mouse_move).handlers.on_window_mouse_move;
+    windowMove({ ...motion(20, 75), bounds: { x: 0, y: 0, width, height: 300 } }, p.context);
+    local.on_mouse_move(motion(20, 40), p.context);
+    release();
+    assert.equal(p.instance.folded.has(null), false);
+
+    press();
+    remote.on_mouse_move(motion(20, 100), p.context);
+    local.on_mouse_move(motion(20, 40), p.context);
+    release();
+    assert.equal(p.instance.folded.has(null), false);
+    assert.deepEqual(drops, []);
+    assert.equal(p.instance.machinePress, null);
+    assert.equal(p.instance.machineOver, null);
+
+    press();
+    local.on_mouse_move(motion(21, 40), p.context);
+    release();
+    assert.equal(p.instance.folded.has(null), true);
+
+    press();
+    remote.on_mouse_move(motion(20, 100), p.context);
+    remote["on_mouse_up:left"](motion(20, 100), p.context);
+    assert.deepEqual(drops, [[null, "vps"]]);
+    assert.equal(p.instance.folded.has("vps"), false);
+  }
+});
+
+test("Spaces gives workspace rows the same click and drag threshold in full and rail views", () => {
+  const motion = (x, y) => ({ position: { x, y }, pressed_button: "left" });
+  for (const width of [300, 76]) {
+    const p = spacesPanel();
+    p.data.width = width;
+    const actions = [];
+    p.herdr.run = (name, args) => actions.push([name, args.id, args.index]);
+    p.herdr.spaces = () => [
+      { id: "s1", name: "One", folder: "/one", tabs: [] },
+      { id: "s2", name: "Two", folder: "/two", tabs: [] },
+      { id: "s3", name: "Three", folder: "/three", machine: "vps", tabs: [] },
+    ];
+    p.instance.shown = new Set(["s1", "s2", "s3"]);
+    const root = p.render();
+    const first = uiState(byId(root, "space-s1")).handlers;
+    const second = uiState(byId(root, "space-s2")).handlers;
+    const remote = uiState(byId(root, "space-s3")).handlers;
+    const press = () => first["on_mouse_down:left"](motion(20, 50), p.context);
+
+    press();
+    first.on_mouse_move(motion(23, 50), p.context);
+    assert.ok(call(byId(p.render(), "space-s1"), "cursor_default"));
+    first["on_mouse_up:left"](motion(23, 50), p.context);
+    assert.deepEqual(actions.splice(0), [["space.select", "s1", undefined]]);
+
+    press();
+    first.on_mouse_move(motion(24, 50), p.context);
+    const dragging = p.render();
+    assert.ok(call(byId(dragging, "space-s1"), "cursor_grabbing"));
+    assert.ok(call(byId(dragging, "space-s2"), "cursor_grabbing"));
+    first.on_mouse_move(motion(20, 50), p.context);
+    first["on_mouse_up:left"](motion(20, 50), p.context);
+    assert.deepEqual(actions, []);
+    assert.ok(call(byId(p.render(), "space-s1"), "cursor_default"));
+
+    press();
+    const pressedRoot = p.render();
+    const windowMove = [...nodes(pressedRoot)].map(uiState).find(s => s.handlers.on_window_mouse_move).handlers.on_window_mouse_move;
+    windowMove({ ...motion(20, 85), bounds: { x: 0, y: 0, width, height: 300 } }, p.context);
+    first["on_mouse_up:left"](motion(20, 50), p.context);
+    assert.deepEqual(actions, []);
+
+    press();
+    remote.on_mouse_move(motion(20, 180), p.context);
+    remote["on_mouse_up:left"](motion(20, 180), p.context);
+    assert.deepEqual(actions, []);
+
+    press();
+    second.on_mouse_move(motion(20, 100), p.context);
+    second["on_mouse_up:left"](motion(20, 100), p.context);
+    assert.deepEqual(actions, [["space.move", "s1", 2]]);
+    assert.equal(p.instance.spacePress, null);
+    assert.equal(p.instance.spaceOver, null);
+  }
+});
+
+test("Spaces keeps a port row's empty area clickable and suppresses selection after dragging", () => {
   const p = spacesPanel();
+  p.instance.ports = { "": { s1: [{ number: 3000, address: "127.0.0.1:3000" }] } };
   const actions = [];
-  p.herdr.run = (...args) => actions.push(args);
-  p.herdr.spaces = () => [
-    { id: "s1", name: "One", folder: "/one", tabs: [] },
-    { id: "s2", name: "Two", folder: "/two", tabs: [] },
-  ];
-  p.instance.shown = new Set(["s1", "s2"]);
-  let root = p.render();
-  uiState(byId(root, "space-s1")).handlers["on_mouse_down:left"]({}, p.context);
-  uiState(byId(root, "space-s2")).handlers.on_mouse_move({}, p.context);
-  uiState(byId(root, "space-s2")).handlers.on_mouse_up({}, p.context);
-  assert.equal(actions[0][0], "space.move");
-  assert.equal(actions[0][1].id, "s1");
-  assert.equal(actions[0][1].index, 2);
-  actions.length = 0;
-  root = p.render();
-  uiState(byId(root, "space-s1")).handlers["on_mouse_down:left"]({}, p.context);
-  uiState(byId(root, "space-s1")).handlers.on_mouse_up({}, p.context);
-  assert.equal(p.instance.pressed, null);
-  assert.equal(p.instance.over, null);
-  assert.equal(actions[0][0], "space.select");
-  assert.equal(actions[0][1].id, "s1");
+  p.herdr.run = (name, args) => actions.push([name, args.id]);
+  const root = p.render();
+  const row = uiState(byId(root, "space-s1")).handlers;
+  const ports = uiState(byId(root, "space-ports-s1")).handlers;
+  const start = { position: { x: 20, y: 50 } };
+  const end = { position: { x: 20, y: 80 } };
+
+  row["on_mouse_down:left"](start, p.context);
+  ports["on_mouse_up:left"](end, p.context);
+  assert.deepEqual(actions, []);
+  assert.equal(p.instance.spacePress, null);
+
+  ports["on_mouse_down:left"](end, p.context);
+  ports["on_mouse_up:left"](end, p.context);
+  assert.deepEqual(actions, [["space.select", "s1"]]);
 });
 
 test("Agents rows prefer a pane's given name and keep the folder in the tooltip", () => {

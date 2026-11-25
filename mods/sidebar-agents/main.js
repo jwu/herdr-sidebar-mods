@@ -470,7 +470,7 @@ export default class Agents extends View {
     const t = theme();
     const view = props();
     if (view?.sortMenu) return this.sortMenu(t);
-    if (view?.sidebarSettings) return settingsDialog(t, view.overlay);
+    if (view?.sidebarSettings) return settingsDialog(t, view.overlay, "cursor_default");
     const collapsed = narrow();
     const leading = statusAtStart();
     const expandChildren = enabled(EXPAND_CHILDREN);
@@ -622,7 +622,7 @@ export default class Agents extends View {
         .rounded(4)
         .text_size(11)
         .text_color(open ? t.muted : (t[top] ?? t.muted))
-        .cursor_pointer()
+        .cursor_default()
         .hover((s) => s.bg(t.hover).text_color(t.foreground))
         .on_click((_e, cx) => toggleChildren(a.address, cx))
         .child(svg(`mods/workspace-chrome/chevron-${open ? "down" : "right"}.svg`).size(11).flex_none())
@@ -680,7 +680,7 @@ export default class Agents extends View {
         .p(2)
         .rounded(4)
         .text_color(t.dim)
-        .cursor_pointer()
+        .cursor_default()
         .hover((s) => s.bg(t.hover).text_color(t.foreground))
         .tooltip(isPinned ? "Unpin" : "Pin to the top")
         .on_click((_e, cx) => {
@@ -716,7 +716,7 @@ export default class Agents extends View {
         .items_center()
         .rounded(4)
         .when(a.focused, (el) => el.bg(t.ansi5 + "33"))
-        .cursor_pointer()
+        .cursor_default()
         .hover((s) => s.bg(t.hover))
         .on_hover((on, cx) => {
           if (on) this.hovered = a.address;
@@ -769,7 +769,7 @@ export default class Agents extends View {
         .items_center()
         .text_size(11)
         .font_medium()
-        .cursor_pointer()
+        .cursor_default()
         .hover((s) => s.text_color(t.foreground))
         .on_click((_e, cx) => {
           open ? this.folded.add(g.id) : this.folded.delete(g.id);
@@ -814,7 +814,7 @@ export default class Agents extends View {
             .child(div().text_size(11.5).font_medium().text_color(t.dim).child("Agents"))
             .child(h_flex().items_center().gap(4)
               .when(!find(layout(), node => node.content?.mod === "sidebar-spaces"), el =>
-                el.child(settingsButton(t, openSettings)))
+                el.child(settingsButton(t, openSettings, "cursor_default")))
               .child(div()
                 .id("ag-sort")
                 .text_size(11)

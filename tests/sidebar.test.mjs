@@ -391,8 +391,9 @@ test("Spaces machine folds leave manual scrolling alone", () => {
   for (const [machine, activeRows] of [["local", [2, 3]], ["vps", [-1, 3]]]) {
     for (const activeAt of activeRows) {
       const { handlers } = uiState(byId(root, `machine-${machine}`));
-      handlers.on_mouse_down({}, context);
-      handlers.on_mouse_up({}, context);
+      const event = { position: { x: 20, y: 40 } };
+      handlers.on_mouse_down(event, context);
+      handlers.on_mouse_up(event, context);
       root = instance.render(context);
       assert.equal(instance.activeAt, activeAt);
       resize(); // Herdr can report the same viewport size again after a fold.
@@ -735,8 +736,9 @@ test("a rail machine needing login opens Settings instead of folding", () => {
   instance.machines = [{ name: "vps", state: "needs_login" }];
   const root = instance.render(context);
   const head = byId(root, "machine-vps");
-  uiState(head).handlers.on_mouse_down({}, context);
-  uiState(head).handlers.on_mouse_up({}, context);
+  const event = { position: { x: 20, y: 40 } };
+  uiState(head).handlers.on_mouse_down(event, context);
+  uiState(head).handlers.on_mouse_up(event, context);
   assert.equal(calls[0][0], "app.settings");
   assert.equal(calls[0][1].section, "machines");
   assert.equal(instance.folded.has("vps"), false);
@@ -932,25 +934,25 @@ test("Spaces drags let go outside the list end without a drop", () => {
   assert.equal(windowHandlers()["on_window_mouse_up:left"], undefined, "nothing watches the window without a press");
   const bounds = { x: 0, y: 30, width: 300, height: 400 };
   const press = () => {
-    uiState(byId(root, "space-local")).handlers["on_mouse_down:left"]({}, context);
+    uiState(byId(root, "space-local")).handlers["on_mouse_down:left"]({ position: { x: 100, y: 60 } }, context);
     root = instance.render(context);
-    uiState(byId(root, "space-remote")).handlers.on_mouse_move({}, context);
+    uiState(byId(root, "space-remote")).handlers.on_mouse_move({ position: { x: 100, y: 100 } }, context);
     return windowHandlers();
   };
 
   let handlers = press();
   handlers["on_window_mouse_up:left"]({ position: { x: 100, y: 100 }, bounds }, context);
-  assert.equal(instance.pressed, "local", "a release inside is the row's to handle");
+  assert.equal(instance.spacePress?.id, "local", "a release inside is the row's to handle");
   handlers["on_window_mouse_up:left"]({ position: { x: 500, y: 100 }, bounds }, context);
-  assert.equal(instance.pressed, null);
-  assert.equal(instance.over, null);
+  assert.equal(instance.spacePress, null);
+  assert.equal(instance.spaceOver, null);
 
   handlers = press();
   handlers.on_window_mouse_move({ position: { x: 500, y: 100 }, bounds, pressed_button: "left" }, context);
-  assert.equal(instance.pressed, "local", "still carried outside the list");
-  assert.equal(instance.over, null, "no drop line while outside");
+  assert.equal(instance.spacePress?.id, "local", "still carried outside the list");
+  assert.equal(instance.spaceOver, null, "no drop line while outside");
   handlers.on_window_mouse_move({ position: { x: 100, y: 100 }, bounds }, context);
-  assert.equal(instance.pressed, null, "released outside the window");
+  assert.equal(instance.spacePress, null, "released outside the window");
 
   uiState(byId(root, "machine-vps")).handlers["on_mouse_down:left"]({}, context);
   root = instance.render(context);

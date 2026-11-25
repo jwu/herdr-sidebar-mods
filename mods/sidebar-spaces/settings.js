@@ -7,14 +7,14 @@ import {
   SHOW_GIT_BRANCH, SHOW_GIT_CHANGES, SHOW_GIT_SYNC, EXPAND_CHILDREN, AGENT_SORT, enabled,
 } from "./shared.js";
 
-export function settingsButton(t, openSettings) {
+export function settingsButton(t, openSettings, cursorStyle = "cursor_pointer") {
   return div().id("sidebar-settings").size(26).flex_none().flex().items_center().justify_center()
-    .rounded(6).cursor_pointer().hover(s => s.bg(t.hover)).tooltip("Sidebar settings")
+    .rounded(6)[cursorStyle]().hover(s => s.bg(t.hover)).tooltip("Sidebar settings")
     .on_click(openSettings)
     .child(svg("mods/workspace-chrome/settings.svg").size(14));
 }
 
-export function settingsDialog(t, overlay) {
+export function settingsDialog(t, overlay, cursorStyle = "cursor_pointer") {
   const row = label => h_flex().h(34).px(11).gap(12).flex_none().items_center()
     .child(div().flex_1().min_w(0).truncate().child(label));
   const section = (title, rows) => v_flex().gap(5).flex_none()
@@ -22,7 +22,7 @@ export function settingsDialog(t, overlay) {
     .child(v_flex().py(3).rounded(8).border_1().border_color(t.border).bg(t.surface).children(rows));
   const toggle = (label, key) => {
     const on = enabled(key);
-    return row(label).id(`setting-${key}`).rounded(6).cursor_pointer()
+    return row(label).id(`setting-${key}`).rounded(6)[cursorStyle]()
       .hover(s => s.bg(t.hover)).on_click(() => setShared(key, !enabled(key)))
       .child(div().w(32).h(18).p(2).flex_none().flex().items_center().rounded_full()
         .bg(on ? t.accent : t.input)
@@ -33,7 +33,7 @@ export function settingsDialog(t, overlay) {
     const selected = options.find(([id]) => id === shared(key))?.[0] ?? fallback;
     return row(label).child(h_flex().p(2).gap(2).rounded(6).bg(t.input).flex_none()
       .children(options.map(([id, text]) => div().id(`setting-${key}-${id}`).px(8).h(24).rounded(4)
-        .flex().items_center().cursor_pointer().text_size(12).text_color(id === selected ? t.foreground : t.muted)
+        .flex().items_center()[cursorStyle]().text_size(12).text_color(id === selected ? t.foreground : t.muted)
         .when(id === selected, el => el.bg(t.raised).font_semibold())
         .when(id !== selected, el => el.hover(s => s.bg(t.hover).text_color(t.foreground)))
         .on_click(() => setShared(key, id)).child(text))));
@@ -60,7 +60,7 @@ export function settingsDialog(t, overlay) {
         toggle("Expand child agents by default", EXPAND_CHILDREN),
       ])))
     .child(h_flex().h(48).flex_none().px(18).items_center().justify_end().border_t(1).border_color(t.border)
-      .child(div().id("settings-done").px(12).h(28).flex().items_center().rounded(6).cursor_pointer()
+      .child(div().id("settings-done").px(12).h(28).flex().items_center().rounded(6)[cursorStyle]()
         .bg(t.accent).text_color(t.accent_foreground).font_semibold().hover(s => s.opacity(0.9))
         .on_click(() => closeOverlay(overlay)).child("Done")));
 }
