@@ -820,10 +820,11 @@ export default class Spaces extends View {
     const machineNames = groups.map(group => group.m);
     return groups.flatMap(({ m, machine, repair, rebuilt, folded, rows }) => {
       const connected = !m || machine?.state === "connected";
+      const statusColor = connected ? t.ansi2 : machine?.state === "connecting" ? t.ansi3 : t.muted;
       const login = machine?.state === "needs_login" ? `hc machine login ${m}` : null;
       // Elements are single-use: the rail and the wide head each build their own.
       const icon = () => svg(`mods/workspace-chrome/${m ? "server" : "monitor"}.svg`).size(14).flex_none().text_color(t.muted);
-      const badge = () => div().absolute().right(-3).bottom(-2).size(6).rounded(3).border_1().border_color(t.chrome).bg(connected ? t.ansi2 : t.muted);
+      const badge = () => div().absolute().right(-3).bottom(-2).size(6).rounded(3).border_1().border_color(t.chrome).bg(statusColor);
       const warning = () => div().id(`machine-logout-${m}`).flex_none().text_color(t.blocked)
         .tooltip("Agents stop when you disconnect. Click for the fix.")
         .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
@@ -866,7 +867,9 @@ export default class Spaces extends View {
           .when(m === null && this.cupHere && (enabled(SHOW_CUP) || this.cup !== "off"), el => el.child(cup()))
           .when(connected && !rebuilt, el => el.child(trash())))
         .when(machine?.keeps_running_after_logout === false, el => el.child(warning()))
-        .when(!connected && !rebuilt && !login, el => el.child(div().flex_none().child((machine?.state ?? "asleep").replace(/_/g, " "))))
+        .when(!connected && !rebuilt && !login, el => el.child(div().flex_none()
+          .when(machine?.state === "connecting", label => label.text_color(statusColor))
+          .child((machine?.state ?? "asleep").replace(/_/g, " "))))
         .when(rebuilt, el => el.child(h_flex().flex_none().gap(3).items_center()
           .child(div().max_w(140).truncate().child(repair?.error || "rebuilt ·"))
           .child(div().id(`machine-connect-${m}`).text_color(repair?.error ? t.blocked : t.muted)
@@ -880,7 +883,7 @@ export default class Spaces extends View {
           .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
           .on_click((_e, cx) => { cx.stop_propagation(); run("space.new", { machine: m ?? "" }); })
           .child(svg("mods/workspace-chrome/plus.svg").size(12).flex_none())))
-        .child(div().size(6).rounded(3).flex_none().bg(connected ? t.ansi2 : t.muted))
+        .child(div().size(6).rounded(3).flex_none().bg(statusColor))
         .child(div().w(SPACE_STATUS_WIDTH).flex_none().flex().justify_center()
           .child(svg(`mods/workspace-chrome/chevron-${folded ? "right" : "down"}.svg`).size(11).flex_none()));
       const from = machineNames.indexOf(this.machinePress?.m);
