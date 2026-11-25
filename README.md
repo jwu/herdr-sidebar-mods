@@ -66,6 +66,7 @@ In your personal layout, set `content.pane.header.content.mod` to `pane-header` 
   - Spaces adds **Sidebar settings** and **Keep this Mac awake (toggle)** to the command palette. Agents adds **Sort agents by priority** and **Group agents by space**.
   - The sidebar stops polling machines, ports, and Git while the window is minimized or hidden.
 - A pane renamed with **Rename** shows its name in the Agents panel instead of its folder.
+- Once a day the sidebar asks GitHub's public releases API whether a newer release is out. Nothing about you is sent, and nothing is downloaded or installed. When there is one, a toast appears once and the gear shows a dot. **Updates** in Sidebar settings links the release and copies a line you can give your agent to update the mods. Turn off **Check for updates daily** to stop the daily check; **Check now** still works.
 - Hover an idle agent and click the crossed-out eye to mark it unread. It moves to the **Unread** section and shows an unread dot in Agents, Spaces, and the pane header. Click the check on its row, or the double check on the Unread heading, to mark it read. A new turn always clears the mark. In Sidebar settings, **Clear unread when** chooses whether leaving the agent and coming back also clears it, and **Unread color** picks its color.
 
 ## License

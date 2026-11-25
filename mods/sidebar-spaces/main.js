@@ -17,6 +17,7 @@ import {
 import { hostOf, sampleScript, sampleSections, parsePorts, parseStats } from "./probe.js";
 import { CUP_PID, CUP_VERIFY, hasCaffeinate, cupPidAlive, readCupPid, removeCupPid, changeCupHold } from "./cup.js";
 import { settingsButton, settingsDialog, settingsOverlay } from "./settings.js";
+import { checkForUpdate } from "./update.js";
 
 const openSettings = () => openOverlay(settingsOverlay("sidebar-spaces"));
 
@@ -233,6 +234,9 @@ export default class Spaces extends View {
     // `git status` walks the whole tree, on another machine a process there:
     // only when its answer could have changed (see `due`).
     cx.timer.every(250, (cx) => { if (shown()) this.checkNew(cx); });
+    // A newer release: asked at most once a day, shared with the Agents panel.
+    cx.spawn(() => checkForUpdate());
+    cx.timer.every(3600 * 1000, (cx) => { if (shown()) cx.spawn(() => checkForUpdate()); });
   }
 
   checkNew(cx) {

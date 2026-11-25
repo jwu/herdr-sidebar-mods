@@ -159,8 +159,18 @@ warning and opens the official machine-add dialog for the fix (core 0.1.21+).
   scheduling, and the Dock badge. `mod.json` declares the panel and its sort
   palette entries. `keep.svg` supplies the keep-as-tab icon.
 - Both sidebar folders carry identical copies of `shared.js` for the Git
-  cache, row helpers, and settings keys, and `settings.js` for the settings
-  dialog and gear. Each panel loads its own copies.
+  cache, row helpers, and settings keys, `settings.js` for the settings
+  dialog and gear, and `update.js` for the release check. Each panel loads its
+  own copies.
+- `update.js` holds `VERSION` (the release workflow refuses a tag that
+  differs). Either panel calls `checkForUpdate()` at start and hourly; it asks
+  `api.github.com/repos/jwu/herdr-sidebar-mods/releases/latest` at most once a
+  day (once an hour after a failure) and keeps `{latest, url, checkedAt,
+  toasted, seen}` in shared `sidebar.updates`, so the panels share one answer.
+  A newer `vX.Y.Z` toasts once per version and puts an accent dot on the gear
+  until the gear is clicked. Settings → Updates has the daily-check toggle
+  (`sidebar.updates.check`) and a row with Check now, or Release and Copy for
+  agent. It never downloads or writes mod files.
 - The optional `pane-header` uses `main.js` for pane labels, status, and
   controls, `mod.json` for the mod declaration, and `close.svg`, `send-back.svg`,
   `split-down.svg`, `split-right.svg`, `zoom.svg`, and `unzoom.svg` for controls.

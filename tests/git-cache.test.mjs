@@ -83,7 +83,7 @@ async function refreshSpaces(p, keys) {
   await p.context.tasks.at(-1).promise;
 }
 
-for (const file of ["shared.js", "settings.js"]) {
+for (const file of ["shared.js", "settings.js", "update.js"]) {
   test(`both mods carry the same ${file} file`, () => {
     const source = name => readFileSync(new URL(`../mods/${name}/${file}`, import.meta.url));
     assert.deepEqual(source("sidebar-agents"), source("sidebar-spaces"));

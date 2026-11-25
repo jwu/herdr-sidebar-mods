@@ -12,6 +12,7 @@ import {
   GIT_DIRTY_EVERY, GIT_REFS_EVERY, gitKey, checkGit, readGitStore, gitRecordOf, writeGitStore,
 } from "./shared.js";
 import { settingsButton, settingsDialog, settingsOverlay } from "./settings.js";
+import { checkForUpdate } from "./update.js";
 
 const openSettings = () => openOverlay(settingsOverlay("sidebar-agents"));
 
@@ -131,6 +132,9 @@ export default class Agents extends View {
     // Out of sight, Git lookups and age ticks wait for the window to show again.
     cx.timer.every(5000, (cx) => { if (shown()) this.refreshGit(cx); });
     cx.timer.every(30000, (cx) => { if (shown()) cx.notify(); });
+    // A newer release: asked at most once a day, shared with the Spaces panel.
+    cx.spawn(() => checkForUpdate());
+    cx.timer.every(3600 * 1000, (cx) => { if (shown()) cx.spawn(() => checkForUpdate()); });
   }
 
   close() {

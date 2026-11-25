@@ -186,7 +186,7 @@ test("Agents shows a settings gear beside sort when the layout has no Spaces mod
   assert.ok(uiState(controls).children.includes(sort));
   uiState(gear).handlers.on_click();
   assert.deepEqual(structuredClone(overlays), [
-    { mod: "sidebar-agents", kind: "dialog", width: 510, height: 646, props: { sidebarSettings: true } },
+    { mod: "sidebar-agents", kind: "dialog", width: 510, height: 755, props: { sidebarSettings: true } },
   ]);
 });
 
