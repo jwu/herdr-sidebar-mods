@@ -6,6 +6,8 @@ that section into the release's notes. Releases up to 0.8.1 are listed on
 
 ## Unreleased
 
+## 0.11.0 - 2026-11-25
+
 - Top-level rows in Agents show the short terminal ID after the machine name, separated by a middle dot. Sidebar settings lets you show or hide parent and child terminal IDs independently.
 
 ## 0.10.0 - 2026-11-25
