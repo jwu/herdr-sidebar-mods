@@ -6,6 +6,8 @@ that section into the release's notes. Releases up to 0.8.1 are listed on
 
 ## Unreleased
 
+## 0.10.0 - 2026-11-25
+
 - Child terminal rows in Spaces and Agents show the short terminal ID next to the name, in the same color as Git branch names.
 
 ## 0.9.1 - 2026-11-25
