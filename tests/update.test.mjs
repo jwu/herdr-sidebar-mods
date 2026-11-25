@@ -21,10 +21,12 @@ function setup(values = {}) {
 
 function feed(tag, { ok = true } = {}) {
   const calls = [];
-  const fetchImpl = async (url) => {
+  const fetchImpl = async (url, options) => {
     calls.push(url);
+    // GitHub refuses a request without a User-Agent; Herdr's fetch sends none.
+    assert.match(options?.headers?.["user-agent"] ?? "", /^herdr-ultimate-sidebar\//);
     if (tag instanceof Error) throw tag;
-    return { ok, json: async () => ({ tag_name: tag, html_url: `https://github.com/jwu/herdr-sidebar-mods/releases/tag/${tag}` }) };
+    return { ok, status: ok ? 200 : 403, json: async () => ({ tag_name: tag, html_url: `https://github.com/jwu/herdr-sidebar-mods/releases/tag/${tag}` }) };
   };
   return { calls, fetchImpl };
 }
@@ -69,6 +71,7 @@ test("the installed version or an older one is up to date", async () => {
   const { toasts, update } = setup();
   const u = await update.checkForUpdate({ fetchImpl: feed(`v${update.VERSION}`).fetchImpl });
   assert.equal(u.available, false);
+  assert.equal(u.error, null);
   assert.equal(toasts.length, 0);
 });
 
@@ -80,6 +83,7 @@ test("offline or a bad answer stays quiet and retries within the hour", async ()
     assert.equal(toasts.length, 0);
     const at = store.get(update.UPDATE_STATE).checkedAt;
     assert.ok(Date.now() - at > 22 * 3600 * 1000, "the next check is due within an hour");
+    assert.ok(u.error, "the reason is kept for the settings row");
   }
 });
 

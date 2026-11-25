@@ -14,7 +14,7 @@ export const RELEASES = `https://github.com/${REPO}/releases`;
 export const AGENT_PROMPT = `Update the Herdr Ultimate Sidebar mods (sidebar-spaces, sidebar-agents, and pane-header if installed) in ~/.config/herdr-app/mods from github.com/${REPO} to its latest release.`;
 
 export const CHECK_UPDATES = "sidebar.updates.check"; // false: only Check now asks GitHub
-export const UPDATE_STATE = "sidebar.updates"; // { latest, url, checkedAt, toasted, seen }
+export const UPDATE_STATE = "sidebar.updates"; // { latest, url, checkedAt, toasted, seen, error }
 const DAY = 24 * 3600 * 1000;
 const RETRY = 3600 * 1000;
 const RELEASE = /^v?\d+\.\d+\.\d+$/; // pre-releases are never offered
@@ -44,6 +44,7 @@ export function updateState() {
     unseen: available && s.seen !== latest,
     checking: Boolean(s.checking) && Date.now() - s.checking < 60000,
     checkedAt: Number(s.checkedAt) || 0,
+    error: typeof s.error === "string" ? s.error : null,
   };
 }
 
@@ -65,24 +66,30 @@ export async function checkForUpdate({ force = false, fetchImpl = globalThis.fet
   save({ checkedAt: now, checking: now });
   let tag = null;
   let url = null;
+  let error = null;
   try {
+    // GitHub's API refuses a request without a User-Agent (403), and Herdr's
+    // fetch sends none of its own.
     const r = await fetchImpl(`https://api.github.com/repos/${REPO}/releases/latest`, {
-      headers: { accept: "application/vnd.github+json" },
+      headers: { accept: "application/vnd.github+json", "user-agent": `herdr-ultimate-sidebar/${VERSION}` },
     });
-    if (r?.ok) {
+    if (!r?.ok) error = `GitHub answered ${r?.status ?? "nothing"}`;
+    else {
       const rel = await r.json();
       if (RELEASE.test(String(rel?.tag_name ?? ""))) {
         tag = String(rel.tag_name).replace(/^v/, "");
         if (typeof rel.html_url === "string" && rel.html_url.startsWith(`https://github.com/${REPO}/`)) url = rel.html_url;
-      }
+      } else error = "no release found";
     }
-  } catch {}
+  } catch (e) {
+    error = String(e?.message ?? e) || "network error";
+  }
   if (!tag) {
-    save({ checkedAt: now - DAY + RETRY, checking: 0 });
+    save({ checkedAt: now - DAY + RETRY, checking: 0, error });
     return updateState();
   }
   const toast = newer(tag, VERSION) && state().toasted !== tag;
-  save({ latest: tag, url, checking: 0, ...(toast ? { toasted: tag } : {}) });
+  save({ latest: tag, url, checking: 0, error: null, ...(toast ? { toasted: tag } : {}) });
   if (toast) {
     notify({
       title: `Ultimate Sidebar ${tag} is available`,

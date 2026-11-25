@@ -17,7 +17,7 @@ export function settingsButton(t, openSettings, cursorStyle = "cursor_pointer") 
     .on_click((event, cx) => { markUpdateSeen(); openSettings(event, cx); })
     .child(svg("mods/workspace-chrome/settings.svg").size(14))
     .when(update.unseen, el => el.child(div().id("sidebar-update-dot").absolute().top(4).right(4)
-      .size(6).rounded_full().bg(t.accent)));
+      .size(6).rounded_full().bg(t.ansi1)));
 }
 
 // The Updates section's second row: the installed version, or the newer one
@@ -26,8 +26,10 @@ function updateRow(ui) {
   const u = updateState();
   const label = u.available ? `${u.latest} is available (you have ${u.current})`
     : u.checking ? `Version ${u.current} · checking…`
+    : u.error ? `Version ${u.current} · check failed (${u.error})`
     : u.checkedAt && u.latest ? `Version ${u.current} · up to date` : `Version ${u.current}`;
-  const row = ui.row(label, u.available ? "accent" : null).id("setting-update");
+  const row = ui.row(label, u.available ? "accent" : !u.checking && u.error ? "ansi1" : null).id("setting-update")
+    .when(!u.available && !u.checking && Boolean(u.error), el => el.tooltip(`The last check failed: ${u.error}. It tries again within the hour.`));
   if (u.available) {
     return row
       .child(ui.button("update-release", "Release", (_e, cx) => cx.open_url(u.url)))

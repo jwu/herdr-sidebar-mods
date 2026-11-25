@@ -167,7 +167,7 @@ warning and opens the official machine-add dialog for the fix (core 0.1.21+).
   `api.github.com/repos/jwu/herdr-sidebar-mods/releases/latest` at most once a
   day (once an hour after a failure) and keeps `{latest, url, checkedAt,
   toasted, seen}` in shared `sidebar.updates`, so the panels share one answer.
-  A newer `vX.Y.Z` toasts once per version and puts an accent dot on the gear
+  A newer `vX.Y.Z` toasts once per version and puts a red dot on the gear
   until the gear is clicked. Settings → Updates has the daily-check toggle
   (`sidebar.updates.check`) and a row with Check now, or Release and Copy for
   agent. It never downloads or writes mod files.
