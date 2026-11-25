@@ -6,6 +6,8 @@ that section into the release's notes. Releases up to 0.8.1 are listed on
 
 ## Unreleased
 
+## 0.9.1 - 2026-11-25
+
 - **Update check works.** In 0.9.0 GitHub refused every check, so no update was ever found. Sidebar settings now also says when a check fails and why.
 
 ## 0.9.0 - 2026-11-25
