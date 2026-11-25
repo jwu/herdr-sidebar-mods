@@ -27,6 +27,8 @@ export const EXPAND_TERMINALS = "sidebar.spaces.expandTerminals";
 export const SHOW_GIT_BRANCH = "sidebar.git.showBranch";
 export const SHOW_GIT_CHANGES = "sidebar.git.showChanges";
 export const SHOW_GIT_SYNC = "sidebar.git.showSync";
+export const SHOW_PARENT_TERMINAL_IDS = "sidebar.agents.showParentTerminalIds";
+export const SHOW_CHILD_TERMINAL_IDS = "sidebar.showChildTerminalIds";
 export const EXPAND_CHILDREN = "sidebar.agents.expandChildren";
 export const AGENT_SORT = "agents.sort";
 // "view": leaving a marked agent and coming back reads it. "manual": only Mark

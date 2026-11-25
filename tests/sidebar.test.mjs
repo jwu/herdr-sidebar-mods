@@ -151,7 +151,7 @@ test("Sidebar settings applies the selected status position to both panels", () 
   }
   assert.deepEqual(closed, [], "changes can be made without reopening the dialog");
   const dialog = settings.instance.render(settings.context);
-  for (const key of ["git.showBranch", "git.showChanges", "git.showSync", "spaces.showUsage", "spaces.showPorts", "spaces.expandTerminals", "spaces.showCup", "agents.expandChildren"]) {
+  for (const key of ["git.showBranch", "git.showChanges", "git.showSync", "agents.showParentTerminalIds", "showChildTerminalIds", "spaces.showUsage", "spaces.showPorts", "spaces.expandTerminals", "spaces.showCup", "agents.expandChildren"]) {
     const toggle = uiState(byId(dialog, `setting-sidebar.${key}`)).handlers.on_click;
     toggle();
     assert.equal(shared(`sidebar.${key}`), false);
@@ -186,7 +186,7 @@ test("Agents shows a settings gear beside sort when the layout has no Spaces mod
   assert.ok(uiState(controls).children.includes(sort));
   uiState(gear).handlers.on_click();
   assert.deepEqual(structuredClone(overlays), [
-    { mod: "sidebar-agents", kind: "dialog", width: 510, height: 755, props: { sidebarSettings: true } },
+    { mod: "sidebar-agents", kind: "dialog", width: 510, height: 823, props: { sidebarSettings: true } },
   ]);
 });
 
@@ -457,6 +457,7 @@ test("Agents shows a plain terminal as the parent of a reporting child agent", (
   });
   let root = instance.render(context);
   assert.ok(textOf(byId(root, "ag-t2")).includes("current-project"));
+  assert.ok(textOf(byId(root, "ag-t2")).includes("Local · t2"));
   assert.ok(textOf(byId(root, "sub-t3")).includes("pi-test"));
   assert.ok(byId(root, "sub-t4"));
   assert.ok([...nodes(byId(root, "sub-t4"))].some(n => uiState(n).calls.some(([method, color]) => method === "bg" && color === herdr.theme().done)),
@@ -502,19 +503,40 @@ test("both sidebars keep child terminals in a space on their machine", () => {
   for (const [name, rowId] of [["sidebar-spaces", "task-vps/t3"], ["sidebar-agents", "sub-vps/t3"]]) {
     const calls = [];
     const toasts = [];
+    const settings = new Map();
     const { instance, context, herdr } = init(name, {
+      shared: key => settings.get(key),
       spaces: () => [local, first, home],
       panes: () => [{ pane: parent.pane, tab: parent.tab, terminal: parent.address }],
       agents: () => [parent],
       terminals: () => [child, { address: "vps/t2", parent: parent.address, state: "live" }],
       run: (command, args) => calls.push([command, args.id ?? args.terminal, args.place]),
     });
-    const row = byId(instance.render(context), rowId);
+    const root = instance.render(context);
+    if (name === "sidebar-agents") {
+      assert.ok(textOf(byId(root, "ag-vps/t1")).includes("vps · t1"));
+      settings.set("sidebar.agents.showParentTerminalIds", false);
+      const hidden = instance.render(context);
+      const parentText = textOf(byId(hidden, "ag-vps/t1"));
+      assert.ok(parentText.includes("vps"));
+      assert.ok(!parentText.includes("vps · t1"));
+      assert.ok(textOf(byId(hidden, rowId)).includes("Workert3"));
+      settings.delete("sidebar.agents.showParentTerminalIds");
+    }
+    const row = byId(root, rowId);
     const id = [...nodes(row)].find(node => uiState(node).children.includes("t3"));
     assert.ok(id, name);
     assert.ok(uiState(id).calls.some(([method, color]) => method === "text_color" && color === herdr.theme().dim), name);
     const nameGroup = uiState(row).children.find(node => textOf(node) === "Workert3");
     assert.equal(uiState(nameGroup).children.at(-1), id, name);
+    settings.set("sidebar.showChildTerminalIds", false);
+    const hidden = instance.render(context);
+    assert.ok(textOf(byId(hidden, rowId)).includes("Worker"), name);
+    assert.ok(!textOf(byId(hidden, rowId)).includes("t3"), name);
+    if (name === "sidebar-agents") {
+      assert.ok(textOf(byId(hidden, "ag-vps/t1")).includes("vps · t1"));
+    }
+    settings.delete("sidebar.showChildTerminalIds");
     const keep = ["terminal.keep", child.address, "tab"];
     const clickKeep = () => {
       calls.length = 0;

@@ -8,7 +8,8 @@ import {
   find, sidebarPx, narrow, shown, GLYPH, SEG_GAP, SCROLL_GUTTER, fit, segmentBudgets,
   TREE_STROKE_WIDTH, treeLines, machineOf, keepTerminal, viewedTerminalStatuses, mark, statusDot,
   unreadStatuses, markUnread, markRead, unreadColor,
-  AGENT_SORT, EXPAND_CHILDREN, SHOW_GIT_BRANCH, SHOW_GIT_CHANGES, SHOW_GIT_SYNC, enabled, statusAtStart,
+  AGENT_SORT, EXPAND_CHILDREN, SHOW_GIT_BRANCH, SHOW_GIT_CHANGES, SHOW_GIT_SYNC,
+  SHOW_PARENT_TERMINAL_IDS, SHOW_CHILD_TERMINAL_IDS, enabled, statusAtStart,
   GIT_DIRTY_EVERY, GIT_REFS_EVERY, gitKey, checkGit, readGitStore, gitRecordOf, writeGitStore,
 } from "./shared.js";
 import { settingsButton, settingsDialog, settingsOverlay } from "./settings.js";
@@ -440,7 +441,7 @@ export default class Agents extends View {
       .child(h_flex().ml(4).flex_1().min_w(0).items_center()
         .when(Boolean(pic), el => el.child(div().mr(8).flex_none().child(pic)))
         .child(div().flex_initial().min_w(0).truncate().text_color(t.foreground).child(k.name || k.template || k.program?.name || "Terminal"))
-        .child(div().ml(8).flex_none().text_size(11).text_color(t.dim).child(terminalId)))
+        .when(enabled(SHOW_CHILD_TERMINAL_IDS), el => el.child(div().ml(8).flex_none().text_size(11).text_color(t.dim).child(terminalId))))
       .when(!this.listed.has(k.address), row => row.child(div().ml(4).size(18).flex_none()
         .when(this.hoveredChild === k.address, el => el.child(div().id(`keep-child-${k.address}`)
           .size_full().flex().items_center().justify_center().rounded(4)
@@ -488,6 +489,7 @@ export default class Agents extends View {
     const collapsed = narrow();
     const leading = statusAtStart();
     const expandChildren = enabled(EXPAND_CHILDREN);
+    const showParentIds = enabled(SHOW_PARENT_TERMINAL_IDS);
     const showBranch = enabled(SHOW_GIT_BRANCH);
     const showChanges = enabled(SHOW_GIT_CHANGES);
     const showSync = enabled(SHOW_GIT_SYNC);
@@ -546,7 +548,7 @@ export default class Agents extends View {
         const name = parent?.name || program?.name || parent?.foreground?.name || "Terminal";
         parents.set(address, {
           address, pane: pane?.pane, tab: pane?.tab, space: space?.id,
-          space_name: space?.name, program, title: `${name} · ${address}`,
+          space_name: space?.name, program, title: name,
           cwd: parent?.cwd, seq: a.seq, focused: pane?.focused,
           terminalParent: true, childAddress: a.address,
         });
@@ -734,8 +736,10 @@ export default class Agents extends View {
       const remote = g?.upstream?.includes("/") ? `\u25b8 ${g.upstream.slice(0, g.upstream.indexOf("/"))}` : "";
       const tail = showBranch ? [g?.branch, remote].filter(Boolean).join(" ") : "";
       // The row's own columns, off the sidebar width: this is what is left.
+      const machineName = machine ?? "Local";
+      const terminalId = a.address.split("/").pop();
       const line = this.nameLine([
-        { text: machine ?? "Local", color: t.dim },
+        { text: showParentIds ? `${machineName} · ${terminalId}` : machineName, color: t.dim },
         ...(tail ? [{ text: tail, color: t.dim }] : []),
         ...(showChanges && g?.dirty > 0 ? [{ text: `*${g.dirty}`, color: t.ansi3, fixed: true }] : []),
         ...(showChanges && g?.conflicts > 0 ? [{ text: `\u2718${g.conflicts}`, color: t.ansi1, fixed: true }] : []),
@@ -760,7 +764,7 @@ export default class Agents extends View {
           cx.notify();
         })
         .on_click(open)
-        .when(a.terminalParent, el => el.tooltip([cwd, a.title].filter(Boolean).join(" · ")))
+        .when(a.terminalParent, el => el.tooltip([cwd, a.title, showParentIds && a.address].filter(Boolean).join(" · ")))
         // A named pane hides its folder from the row; the tooltip keeps it.
         .when(Boolean(a.pane_name && !a.terminalParent && cwd), el => el.tooltip(cwd))
         .when(leading, el => el.child(this.statusCell(t, a)))

@@ -4,7 +4,8 @@ import { h_flex, v_flex } from "gpui-base";
 import { closeOverlay, notify, setShared, shared } from "herdr";
 import {
   STATUS_POSITION_KEY, SHOW_USAGE, SHOW_PORTS, SHOW_CUP, EXPAND_TERMINALS,
-  SHOW_GIT_BRANCH, SHOW_GIT_CHANGES, SHOW_GIT_SYNC, EXPAND_CHILDREN, AGENT_SORT, UNREAD_CLEAR, UNREAD_COLOR, UNREAD_COLORS, enabled,
+  SHOW_GIT_BRANCH, SHOW_GIT_CHANGES, SHOW_GIT_SYNC, SHOW_PARENT_TERMINAL_IDS, SHOW_CHILD_TERMINAL_IDS,
+  EXPAND_CHILDREN, AGENT_SORT, UNREAD_CLEAR, UNREAD_COLOR, UNREAD_COLORS, enabled,
 } from "./shared.js";
 import { AGENT_PROMPT, CHECK_UPDATES, checkForUpdate, markUpdateSeen, updateState } from "./update.js";
 
@@ -50,6 +51,10 @@ const SECTIONS = [
     ui => ui.toggle("Git branch and remote", SHOW_GIT_BRANCH),
     ui => ui.toggle("Git changes and conflicts", SHOW_GIT_CHANGES),
     ui => ui.toggle("Git ahead and behind counts", SHOW_GIT_SYNC),
+    ui => ui.toggle("Show parent terminal IDs", SHOW_PARENT_TERMINAL_IDS)
+      .tooltip("Show the ID next to the machine name on top-level rows in Agents."),
+    ui => ui.toggle("Show child terminal IDs", SHOW_CHILD_TERMINAL_IDS)
+      .tooltip("Show IDs next to terminal names in Spaces and on child rows in Agents."),
   ] },
   { title: "Spaces", rows: [
     ui => ui.toggle("Machine CPU and memory", SHOW_USAGE),

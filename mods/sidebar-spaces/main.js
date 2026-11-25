@@ -10,7 +10,7 @@ import { spaces, machines, panes, terminals, focused, run, openOverlay, props, e
 import {
   sidebarPx, narrow, shown, GLYPH, SEG_GAP, SCROLL_GUTTER, fit, segmentBudgets,
   TREE_STROKE_WIDTH, treeLines, machineOf, keepTerminal, viewedTerminalStatuses, unreadStatuses, unreadColor, mark,
-  SHOW_USAGE, SHOW_PORTS, SHOW_CUP, EXPAND_TERMINALS,
+  SHOW_USAGE, SHOW_PORTS, SHOW_CUP, EXPAND_TERMINALS, SHOW_CHILD_TERMINAL_IDS,
   SHOW_GIT_BRANCH, SHOW_GIT_CHANGES, SHOW_GIT_SYNC, enabled, statusAtStart,
   GIT_DIRTY_EVERY, GIT_REFS_EVERY, gitKey, checkGit, latestGitRecord, readGitStore, gitRecordOf, writeGitStore,
 } from "./shared.js";
@@ -992,6 +992,7 @@ export default class Spaces extends View {
   terminalRows(id, terms, t, shown) {
     if (!this.terminalsOpen(id)) return [];
     const leading = statusAtStart();
+    const showChildIds = enabled(SHOW_CHILD_TERMINAL_IDS);
     return terminalTree(terms).map(({ term, lines }) => {
       const program = term.foreground?.name || term.program?.name || term.argv?.[0]?.split(/[\\/]/).pop();
       const title = term.name || term.template || program || "Terminal";
@@ -1026,7 +1027,7 @@ export default class Spaces extends View {
         .child(h_flex().ml(4).flex_1().min_w(0).gap(8).items_center()
           .child(icon)
           .child(div().flex_initial().min_w(0).truncate().text_color(t.foreground).child(title))
-          .child(div().flex_none().text_size(11).text_color(t.dim).child(terminalId)))
+          .when(showChildIds, el => el.child(div().flex_none().text_size(11).text_color(t.dim).child(terminalId))))
         .child(div().ml(4).size(18).flex_none()
           .when(this.hoveredChild === term.address, el => el.child(div().id(`keep-child-${term.address}`)
             .size_full().flex().items_center().justify_center().rounded(4)
