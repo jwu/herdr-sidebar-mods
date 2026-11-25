@@ -6,6 +6,8 @@ that section into the release's notes. Releases up to 0.8.1 are listed on
 
 ## Unreleased
 
+- Child terminal rows in Spaces and Agents show the short terminal ID next to the name, in the same color as Git branch names.
+
 ## 0.9.1 - 2026-11-25
 
 - **Update check works.** In 0.9.0 GitHub refused every check, so no update was ever found. Sidebar settings now also says when a check fails and why.

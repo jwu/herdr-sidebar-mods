@@ -498,7 +498,7 @@ test("both sidebars keep child terminals in a space on their machine", () => {
   const first = { id: "vps/first", name: "First", machine: "vps", tabs: [{ id: "vps/first-tab" }] };
   const home = { id: "vps/home", name: "Home", machine: "vps", tabs: [{ id: "vps/tab" }] };
   const parent = { address: "vps/t1", pane: "vps/p1", tab: "vps/tab", space: home.id, status: "working" };
-  const child = { address: "vps/t3", parent: "vps/t2", state: "live", status: "idle" };
+  const child = { address: "vps/t3", name: "Worker", parent: "vps/t2", state: "live", status: "idle" };
   for (const [name, rowId] of [["sidebar-spaces", "task-vps/t3"], ["sidebar-agents", "sub-vps/t3"]]) {
     const calls = [];
     const toasts = [];
@@ -509,6 +509,12 @@ test("both sidebars keep child terminals in a space on their machine", () => {
       terminals: () => [child, { address: "vps/t2", parent: parent.address, state: "live" }],
       run: (command, args) => calls.push([command, args.id ?? args.terminal, args.place]),
     });
+    const row = byId(instance.render(context), rowId);
+    const id = [...nodes(row)].find(node => uiState(node).children.includes("t3"));
+    assert.ok(id, name);
+    assert.ok(uiState(id).calls.some(([method, color]) => method === "text_color" && color === herdr.theme().dim), name);
+    const nameGroup = uiState(row).children.find(node => textOf(node) === "Workert3");
+    assert.equal(uiState(nameGroup).children.at(-1), id, name);
     const keep = ["terminal.keep", child.address, "tab"];
     const clickKeep = () => {
       calls.length = 0;

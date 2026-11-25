@@ -399,6 +399,7 @@ export default class Agents extends View {
 
   subRow(t, s, shown) {
     const k = s.t;
+    const terminalId = k.address.split("/").pop();
     const st = kidStatus(k, this.listed);
     const pic = icon(k.program, 14, t.foreground);
     const on = k.address === shown;
@@ -438,7 +439,8 @@ export default class Agents extends View {
       .children(treeLines(s.lines, t))
       .child(h_flex().ml(4).flex_1().min_w(0).items_center()
         .when(Boolean(pic), el => el.child(div().mr(8).flex_none().child(pic)))
-        .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(k.name || k.template || k.program?.name || k.address)))
+        .child(div().flex_initial().min_w(0).truncate().text_color(t.foreground).child(k.name || k.template || k.program?.name || "Terminal"))
+        .child(div().ml(8).flex_none().text_size(11).text_color(t.dim).child(terminalId)))
       .when(!this.listed.has(k.address), row => row.child(div().ml(4).size(18).flex_none()
         .when(this.hoveredChild === k.address, el => el.child(div().id(`keep-child-${k.address}`)
           .size_full().flex().items_center().justify_center().rounded(4)

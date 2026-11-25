@@ -994,7 +994,8 @@ export default class Spaces extends View {
     const leading = statusAtStart();
     return terminalTree(terms).map(({ term, lines }) => {
       const program = term.foreground?.name || term.program?.name || term.argv?.[0]?.split(/[\\/]/).pop();
-      const title = term.name || term.template || program || term.address;
+      const title = term.name || term.template || program || "Terminal";
+      const terminalId = term.address.split("/").pop();
       const iconPath = term.program?.icon;
       const icon = iconPath && !term.program.tint
         ? image(iconPath).w(14).h(14).flex_none()
@@ -1024,7 +1025,8 @@ export default class Spaces extends View {
         .children(treeLines(lines, t))
         .child(h_flex().ml(4).flex_1().min_w(0).gap(8).items_center()
           .child(icon)
-          .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(title)))
+          .child(div().flex_initial().min_w(0).truncate().text_color(t.foreground).child(title))
+          .child(div().flex_none().text_size(11).text_color(t.dim).child(terminalId)))
         .child(div().ml(4).size(18).flex_none()
           .when(this.hoveredChild === term.address, el => el.child(div().id(`keep-child-${term.address}`)
             .size_full().flex().items_center().justify_center().rounded(4)
