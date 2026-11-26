@@ -10,6 +10,7 @@ import { spaces, machines, panes, terminals, focused, run, openOverlay, props, e
 import {
   sidebarPx, narrow, shown, GLYPH, SEG_GAP, SCROLL_GUTTER, fit, segmentBudgets,
   TREE_STROKE_WIDTH, treeLines, machineOf, keepTerminal, viewedTerminalStatuses, unreadStatuses, unreadColor, mark,
+  terminalCopy,
   SHOW_USAGE, SHOW_PORTS, SHOW_CUP, EXPAND_TERMINALS, SHOW_CHILD_TERMINAL_IDS,
   SHOW_GIT_BRANCH, SHOW_GIT_CHANGES, SHOW_GIT_SYNC, enabled, statusAtStart,
   GIT_DIRTY_EVERY, GIT_REFS_EVERY, gitKey, checkGit, latestGitRecord, readGitStore, gitRecordOf, writeGitStore,
@@ -186,6 +187,7 @@ export default class Spaces extends View {
     this.finishedCountsDirty = false;
     this.refreshingFinishedCounts = false;
     this.hoveredChild = null;
+    this.terminalCopy = terminalCopy("sidebar-spaces");
     // The machine order the user dragged into place, by name (null is this one).
     // Machines it never lists keep the catalog's order after the arranged ones.
     let order;
@@ -237,6 +239,10 @@ export default class Spaces extends View {
     // A newer release: asked at most once a day, shared with the Agents panel.
     cx.spawn(() => checkForUpdate());
     cx.timer.every(3600 * 1000, (cx) => { if (shown()) cx.spawn(() => checkForUpdate()); });
+  }
+
+  close() {
+    this.terminalCopy?.close();
   }
 
   checkNew(cx) {
@@ -1027,7 +1033,9 @@ export default class Spaces extends View {
         .child(h_flex().ml(4).flex_1().min_w(0).gap(8).items_center()
           .child(icon)
           .child(div().flex_initial().min_w(0).truncate().text_color(t.foreground).child(title))
-          .when(showChildIds, el => el.child(div().flex_none().text_size(11).text_color(t.dim).child(terminalId))))
+          .when(showChildIds, el => el.child(div().flex_none().text_size(11).text_color(t.dim).child(terminalId)))
+          .when(showChildIds && this.hoveredChild === term.address, el =>
+            el.child(this.terminalCopy.button(t, term.address))))
         .child(div().ml(4).size(18).flex_none()
           .when(this.hoveredChild === term.address, el => el.child(div().id(`keep-child-${term.address}`)
             .size_full().flex().items_center().justify_center().rounded(4)
@@ -1285,7 +1293,8 @@ export default class Spaces extends View {
         .when(collapsed, el => el.pl(0).pr(0).justify_center())
         .when(!collapsed, el => el.child("Spaces"))
         .child(h_flex().items_center()
-          .when(!collapsed, el => el.child(settingsButton(t, openSettings)))
+          .when(!collapsed, el => el.children(this.terminalCopy.feedback(t, "space-copied"))
+            .child(settingsButton(t, openSettings)))
           .child(div().id("space-new").size(26).flex_none().flex().items_center().justify_center().rounded(6).hover(s => s.bg(t.hover))
             .on_click(() => run("space.new")).child(svg("mods/workspace-chrome/plus.svg").size(14)))))
       .child(this.followDrag(v_flex()).flex_1().min_h(0).pb(14).overflow_y_scrollbar().mode("always").track_scroll(this.scroll)

@@ -98,6 +98,39 @@ export function statusDot(color) {
   return div().size(7).mx(3).flex_none().rounded(4).bg(color);
 }
 
+export const COPY_SIZE = 18;
+
+export function terminalCopy(mod) {
+  let timer;
+  return {
+    button(t, address) {
+      return div().id(`copy-${address}`).size(COPY_SIZE).flex_none().rounded(4)
+        .flex().items_center().justify_center().text_color(t.dim).cursor_default()
+        .hover(s => s.bg(t.hover).text_color(t.foreground))
+        .tooltip("Copy terminal address")
+        .on_click((_e, cx) => {
+          cx.stop_propagation();
+          cx.write_to_clipboard(address);
+          timer?.cancel();
+          timer = cx.timer.after(2000, cx => {
+            timer = null;
+            cx.notify();
+          });
+          cx.notify();
+        })
+        .child(svg(`mods/${mod}/copy.svg`).size(12));
+    },
+    feedback(t, id) {
+      return timer ? [div().id(id).flex_none().px(5).rounded(4).bg(t.input)
+        .text_size(11).text_color(t.foreground).child("Copied")] : [];
+    },
+    close() {
+      timer?.cancel();
+      timer = null;
+    },
+  };
+}
+
 export function machineOf(address) {
   const slash = address.indexOf("/");
   return slash < 0 ? null : address.slice(0, slash);

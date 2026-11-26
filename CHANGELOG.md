@@ -6,6 +6,8 @@ that section into the release's notes. Releases up to 0.8.1 are listed on
 
 ## Unreleased
 
+- Hover over a parent or child agent in Agents, or a child terminal in Spaces, to reveal a copy icon next to its terminal ID. Clicking it shows a brief **Copied** label at the top right of that sidebar. Local addresses copy as `id` and remote addresses as `machine/id`.
+
 ## 0.11.0 - 2026-11-25
 
 - Top-level rows in Agents show the short terminal ID after the machine name, separated by a middle dot. Sidebar settings lets you show or hide parent and child terminal IDs independently.

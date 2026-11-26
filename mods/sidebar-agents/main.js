@@ -7,6 +7,7 @@ import { agents, terminals, panes, focused, spaces, run, theme, shared, setShare
 import {
   find, sidebarPx, narrow, shown, GLYPH, SEG_GAP, SCROLL_GUTTER, fit, segmentBudgets,
   TREE_STROKE_WIDTH, treeLines, machineOf, keepTerminal, viewedTerminalStatuses, mark, statusDot,
+  COPY_SIZE, terminalCopy,
   unreadStatuses, markUnread, markRead, unreadColor,
   AGENT_SORT, EXPAND_CHILDREN, SHOW_GIT_BRANCH, SHOW_GIT_CHANGES, SHOW_GIT_SYNC,
   SHOW_PARENT_TERMINAL_IDS, SHOW_CHILD_TERMINAL_IDS, enabled, statusAtStart,
@@ -104,6 +105,7 @@ export default class Agents extends View {
     this.folded = new Set();
     this.openChildren = new Map();
     this.hoveredChild = null;
+    this.terminalCopy = terminalCopy("sidebar-agents");
     this.scroll = ScrollHandle.new();
     this.activeAt = -1;
     // Each agent's last state and when it changed (ms), kept across restarts.
@@ -139,6 +141,7 @@ export default class Agents extends View {
   }
 
   close() {
+    this.terminalCopy?.close();
     if (this.badgeOwner) setBadge(null);
   }
 
@@ -259,7 +262,7 @@ export default class Agents extends View {
   // name is left without a readable share.
   // `fixed` parts keep their own width and color at the end of the line (ahead
   // and behind counts); the rest share the room by budget.
-  nameLine(parts, room) {
+  nameLine(parts, room, copy) {
     const MIN_NAME = 6;
     const fixed = parts.filter((p) => p.fixed && p.text);
     let kept = parts.filter((p) => !p.fixed && p.text);
@@ -276,11 +279,13 @@ export default class Agents extends View {
       .gap(SEG_GAP)
       .items_center()
       .children([
-        ...kept.map((p, i) => div()
-          .when(i === 0, (el) => el.flex_1().min_w(0))
-          .when(i > 0, (el) => el.flex_none())
-          .truncate()
-          .text_size(11).text_color(p.color).child(i === 0 ? p.text : fit(p.text, widths[i]))),
+        ...kept.map((p, i) => {
+          const text = div().truncate().text_size(11).text_color(p.color).child(i === 0 ? p.text : fit(p.text, widths[i]));
+          if (i > 0) return text.flex_none();
+          if (!copy) return text.flex_1().min_w(0);
+          return h_flex().flex_1().min_w(0).gap(SEG_GAP).items_center()
+            .child(text.flex_initial().min_w(0)).child(copy);
+        }),
         ...fixed.map((p) => div().flex_none().text_size(11).text_color(p.color).child(p.text)),
       ]);
   }
@@ -401,6 +406,8 @@ export default class Agents extends View {
   subRow(t, s, shown) {
     const k = s.t;
     const terminalId = k.address.split("/").pop();
+    const showId = enabled(SHOW_CHILD_TERMINAL_IDS);
+    const hovered = this.hoveredChild === k.address;
     const st = kidStatus(k, this.listed);
     const pic = icon(k.program, 14, t.foreground);
     const on = k.address === shown;
@@ -441,7 +448,8 @@ export default class Agents extends View {
       .child(h_flex().ml(4).flex_1().min_w(0).items_center()
         .when(Boolean(pic), el => el.child(div().mr(8).flex_none().child(pic)))
         .child(div().flex_initial().min_w(0).truncate().text_color(t.foreground).child(k.name || k.template || k.program?.name || "Terminal"))
-        .when(enabled(SHOW_CHILD_TERMINAL_IDS), el => el.child(div().ml(8).flex_none().text_size(11).text_color(t.dim).child(terminalId))))
+        .when(showId, el => el.child(div().ml(8).flex_none().text_size(11).text_color(t.dim).child(terminalId)))
+        .when(showId && hovered, el => el.child(this.terminalCopy.button(t, k.address).ml(4))))
       .when(!this.listed.has(k.address), row => row.child(div().ml(4).size(18).flex_none()
         .when(this.hoveredChild === k.address, el => el.child(div().id(`keep-child-${k.address}`)
           .size_full().flex().items_center().justify_center().rounded(4)
@@ -738,6 +746,7 @@ export default class Agents extends View {
       // The row's own columns, off the sidebar width: this is what is left.
       const machineName = machine ?? "Local";
       const terminalId = a.address.split("/").pop();
+      const copy = showParentIds && this.hovered === a.address ? this.terminalCopy.button(t, a.address) : null;
       const line = this.nameLine([
         { text: showParentIds ? `${machineName} · ${terminalId}` : machineName, color: t.dim },
         ...(tail ? [{ text: tail, color: t.dim }] : []),
@@ -745,7 +754,7 @@ export default class Agents extends View {
         ...(showChanges && g?.conflicts > 0 ? [{ text: `\u2718${g.conflicts}`, color: t.ansi1, fixed: true }] : []),
         ...(showSync && g?.ahead > 0 ? [{ text: `\u2191${g.ahead}`, color: t.ansi2, fixed: true }] : []),
         ...(showSync && g?.behind > 0 ? [{ text: `\u2193${g.behind}`, color: t.ansi1, fixed: true }] : []),
-      ], Math.max(0, px - 88));
+      ], Math.max(0, px - 88 - (copy ? COPY_SIZE + SEG_GAP : 0)), copy);
       return h_flex()
         .id(`ag-${a.address}`)
         .px(AGENT_PADDING)
@@ -869,6 +878,7 @@ export default class Agents extends View {
             .justify_between()
             .child(div().text_size(11.5).font_medium().text_color(t.dim).child("Agents"))
             .child(h_flex().items_center().gap(4)
+              .children(this.terminalCopy.feedback(t, "ag-copied"))
               .when(!find(layout(), node => node.content?.mod === "sidebar-spaces"), el =>
                 el.child(settingsButton(t, openSettings, "cursor_default")))
               .child(div()

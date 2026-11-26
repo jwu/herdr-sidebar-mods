@@ -561,6 +561,76 @@ test("both sidebars keep child terminals in a space on their machine", () => {
   }
 });
 
+test("Both sidebars copy terminal addresses and show temporary feedback in their own headers", () => {
+  for (const [mod, prefix] of [
+    ["sidebar-agents", ""], ["sidebar-agents", "vps/"],
+    ["sidebar-spaces", ""], ["sidebar-spaces", "vps/"],
+  ]) {
+    const inAgents = mod === "sidebar-agents";
+    const feedbackId = inAgents ? "ag-copied" : "space-copied";
+    const controlId = inAgents ? "ag-sort" : "space-new";
+    const space = { id: `${prefix}project`, name: "Project", machine: prefix ? "vps" : null, tabs: [{ id: `${prefix}tab` }] };
+    const parent = { address: `${prefix}t1`, pane: `${prefix}p1`, tab: space.tabs[0].id, space: space.id, status: "working", title: "Parent" };
+    const child = { address: `${prefix}t2`, parent: parent.address, state: "live", status: "working", name: "Child" };
+    const settings = new Map();
+    const events = [];
+    const { instance, context, herdr } = init(mod, {
+      spaces: () => [space],
+      panes: () => [{ pane: parent.pane, tab: parent.tab, terminal: parent.address }],
+      agents: () => [parent], terminals: () => [child], shared: key => settings.get(key),
+      notify: ({ title, level }) => events.push([title, level]),
+    });
+    const render = () => instance.render(context);
+    assert.equal(byId(render(), feedbackId), undefined);
+    const rows = [
+      [`${inAgents ? "sub" : "task"}-${child.address}`, child.address, "sidebar.showChildTerminalIds", true],
+    ];
+    if (inAgents) rows.unshift([`ag-${parent.address}`, parent.address, "sidebar.agents.showParentTerminalIds", false]);
+    for (const [rowId, address, setting, move] of rows) {
+      const copyId = `copy-${address}`;
+      assert.equal(byId(render(), copyId), undefined);
+      const row = uiState(byId(render(), rowId));
+      if (move) row.handlers.on_mouse_move({}, context);
+      else row.handlers.on_hover(true, context);
+      const hoveredRow = byId(render(), rowId);
+      const copy = byId(hoveredRow, copyId);
+      assert.ok(copy);
+      const group = [...nodes(hoveredRow)].find(node => uiState(node).children.includes(copy));
+      const siblings = uiState(group).children;
+      assert.ok(textOf(siblings[siblings.indexOf(copy) - 1]).endsWith(address.split("/").pop()));
+      assert.equal(textOf(copy), "");
+      const { calls } = uiState(copy);
+      assert.ok(calls.some(([method]) => method === "cursor_default"));
+      const [, hover] = calls.find(([method]) => method === "hover");
+      hover(copy);
+      assert.ok(calls.some(([method, color]) => method === "bg" && color === herdr.theme().hover));
+      events.length = 0;
+      uiState(copy).handlers.on_click({}, {
+        ...context,
+        stop_propagation: () => events.push("stop"),
+        write_to_clipboard: text => events.push(text),
+      });
+      assert.deepEqual(events, ["stop", address]);
+      const copied = render();
+      const control = byId(copied, controlId);
+      const controls = [...nodes(copied)].find(node => uiState(node).children.includes(control));
+      assert.equal(textOf(byId(controls, feedbackId)), "Copied");
+      settings.set(setting, false);
+      assert.equal(byId(render(), copyId), undefined);
+      settings.delete(setting);
+      row.handlers.on_hover(false, context);
+      assert.equal(byId(render(), copyId), undefined);
+    }
+    const timers = context.timers.filter(timer => timer.kind === "after");
+    assert.equal(timers.length, rows.length);
+    if (inAgents) assert.equal(timers[0].cancelled, true);
+    const last = timers.at(-1);
+    assert.equal(last.ms, 2000);
+    last.fn(context);
+    assert.equal(byId(render(), feedbackId), undefined);
+  }
+});
+
 test("viewing a completed child clears that turn in both sidebars", () => {
   const child = { address: "t2", parent: "t1", state: "live", status: "done", turn: 1 };
   const values = new Map();
