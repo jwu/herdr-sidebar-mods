@@ -838,7 +838,7 @@ export default class Spaces extends View {
         : t.muted;
       const login = machine?.state === "needs_login" ? `hc machine login ${m}` : null;
       // Elements are single-use: the rail and the wide head each build their own.
-      const icon = () => svg(`mods/workspace-chrome/${m ? "server" : "monitor"}.svg`).size(16).flex_none().text_color(statusColor);
+      const icon = () => svg(`mods/sidebar-spaces/${m ? "pc-case" : "monitor-pc"}.svg`).size(16).flex_none().text_color(statusColor);
       const statusDot = () => div().id(`machine-status-dot-${m ?? "local"}`).size(6).rounded(3).flex_none().bg(statusColor);
       const warning = () => div().id(`machine-logout-${m}`).flex_none().text_color(t.blocked)
         .tooltip("Agents stop when you disconnect. Click for the fix.")
