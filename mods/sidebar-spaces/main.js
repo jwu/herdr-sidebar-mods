@@ -871,6 +871,7 @@ export default class Spaces extends View {
           .when(busy, el => el.spin(900)))
         .child(String(count));
       const row1 = h_flex().pr(SPACE_PADDING).gap(7).items_center()
+        .child(div().size(6).rounded(3).flex_none().bg(statusColor))
         .child(icon())
         .child(div().flex_1().min_w_0().flex().items_center().gap(6)
           .child(div().min_w_0().truncate().child(m ?? "Local"))
@@ -893,7 +894,6 @@ export default class Spaces extends View {
           .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
           .on_click((_e, cx) => { cx.stop_propagation(); run("space.new", { machine: m ?? "" }); })
           .child(svg("mods/workspace-chrome/plus.svg").size(12).flex_none())))
-        .child(div().size(6).rounded(3).flex_none().bg(statusColor))
         .child(div().w(SPACE_STATUS_WIDTH).flex_none().flex().justify_center()
           .child(svg(`mods/workspace-chrome/chevron-${folded ? "right" : "down"}.svg`).size(11).flex_none()));
       const from = machineNames.indexOf(this.machinePress?.m);

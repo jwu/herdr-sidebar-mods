@@ -6,6 +6,8 @@ that section into the release's notes. Releases up to 0.8.1 are listed on
 
 ## Unreleased
 
+- In the expanded Spaces sidebar, each machine’s connection status dot appears at the start of its header, before the machine icon.
+
 ## 0.12.0 - 2026-11-26
 
 - Hover over a parent or child agent in Agents, or a child terminal in Spaces, to reveal a copy icon next to its terminal ID. Clicking it shows a brief **Copied** label at the top right of that sidebar. Local addresses copy as `id` and remote addresses as `machine/id`.
