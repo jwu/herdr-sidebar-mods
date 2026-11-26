@@ -6,6 +6,8 @@ that section into the release's notes. Releases up to 0.8.1 are listed on
 
 ## Unreleased
 
+## 0.13.1 - 2026-11-26
+
 - Spaces shows a monitor and PC case icon for Local and a PC case icon for remote machines in both expanded and collapsed views.
 
 ## 0.13.0 - 2026-11-26

@@ -8,7 +8,7 @@
 import { notify, setShared, shared } from "herdr";
 
 // The installed release. The release workflow refuses a tag that differs.
-export const VERSION = "0.13.0";
+export const VERSION = "0.13.1";
 export const REPO = "jwu/herdr-sidebar-mods";
 export const RELEASES = `https://github.com/${REPO}/releases`;
 export const AGENT_PROMPT = `Update the Herdr Ultimate Sidebar mods (sidebar-spaces, sidebar-agents, and pane-header if installed) in ~/.config/herdr-app/mods from github.com/${REPO} to its latest release.`;
