@@ -6,6 +6,9 @@ that section into the release's notes. Releases up to 0.8.1 are listed on
 
 ## Unreleased
 
+- Machine icons in Spaces show the connection status by color, including red for unreachable machines. The status dot is hidden by default. In Sidebar settings, **Machine status dot** offers **Off**, **First**, **After Icon**, and **Last** for the expanded machine header.
+- Machine icons are 16 pixels and space folder icons are 14 pixels.
+
 ## 0.12.1 - 2026-11-26
 
 - In the expanded Spaces sidebar, each machine’s connection status dot appears at the start of its header, before the machine icon.

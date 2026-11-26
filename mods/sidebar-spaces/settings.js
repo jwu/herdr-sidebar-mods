@@ -3,7 +3,7 @@ import { div, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { closeOverlay, notify, setShared, shared } from "herdr";
 import {
-  STATUS_POSITION_KEY, SHOW_USAGE, SHOW_PORTS, SHOW_CUP, EXPAND_TERMINALS,
+  STATUS_POSITION_KEY, MACHINE_STATUS_DOT, SHOW_USAGE, SHOW_PORTS, SHOW_CUP, EXPAND_TERMINALS,
   SHOW_GIT_BRANCH, SHOW_GIT_CHANGES, SHOW_GIT_SYNC, SHOW_PARENT_TERMINAL_IDS, SHOW_CHILD_TERMINAL_IDS,
   EXPAND_CHILDREN, AGENT_SORT, UNREAD_CLEAR, UNREAD_COLOR, UNREAD_COLORS, enabled,
 } from "./shared.js";
@@ -57,6 +57,8 @@ const SECTIONS = [
       .tooltip("Show IDs next to terminal names in Spaces and on child rows in Agents."),
   ] },
   { title: "Spaces", rows: [
+    ui => ui.choices("Machine status dot", MACHINE_STATUS_DOT,
+      [["off", "Off"], ["start", "First"], ["after-icon", "After Icon"], ["end", "Last"]]),
     ui => ui.toggle("Machine CPU and memory", SHOW_USAGE),
     ui => ui.toggle("Listening ports", SHOW_PORTS),
     ui => ui.toggle("Expand child terminals by default", EXPAND_TERMINALS),

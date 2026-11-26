@@ -11,7 +11,7 @@ import {
   sidebarPx, narrow, shown, GLYPH, SEG_GAP, SCROLL_GUTTER, fit, segmentBudgets,
   TREE_STROKE_WIDTH, treeLines, machineOf, keepTerminal, viewedTerminalStatuses, unreadStatuses, unreadColor, mark,
   terminalCopy,
-  SHOW_USAGE, SHOW_PORTS, SHOW_CUP, EXPAND_TERMINALS, SHOW_CHILD_TERMINAL_IDS,
+  MACHINE_STATUS_DOT, SHOW_USAGE, SHOW_PORTS, SHOW_CUP, EXPAND_TERMINALS, SHOW_CHILD_TERMINAL_IDS,
   SHOW_GIT_BRANCH, SHOW_GIT_CHANGES, SHOW_GIT_SYNC, enabled, statusAtStart,
   GIT_DIRTY_EVERY, GIT_REFS_EVERY, gitKey, checkGit, latestGitRecord, readGitStore, gitRecordOf, writeGitStore,
 } from "./shared.js";
@@ -34,7 +34,7 @@ const SPACE_PADDING = 8;
 const SPACE_GAP = 8;
 const SPACE_STATUS_WIDTH = 16;
 const SPACE_ICON_WIDTH = 20;
-const FOLDER_WIDTH = 16;
+const FOLDER_WIDTH = 14;
 const BRANCH_WIDTH = 13;
 const PORT_ROW_HEIGHT = 18;
 const DRAG_THRESHOLD = 4;
@@ -828,13 +828,18 @@ export default class Spaces extends View {
     };
     const loadingRow = m => h_flex().id(`machine-loading-${m ?? "local"}`).h(28).flex_none().ml(collapsed ? 0 : SPACE_MARGIN).mr(collapsed ? 0 : SCROLL_GUTTER).my(1).px(collapsed ? 0 : SPACE_PADDING).items_center().when(collapsed, el => el.justify_center()).text_size(12).text_color(t.dim).child(collapsed ? "…" : "Loading…");
     const machineNames = groups.map(group => group.m);
+    const dotPosition = shared(MACHINE_STATUS_DOT);
+    const showBadge = ["start", "end", "after-icon"].includes(dotPosition);
     return groups.flatMap(({ m, machine, repair, rebuilt, folded, rows }) => {
       const connected = !m || machine?.state === "connected";
-      const statusColor = connected ? t.ansi2 : machine?.state === "connecting" ? t.ansi3 : t.muted;
+      const statusColor = connected ? t.ansi2
+        : machine?.state === "connecting" ? t.ansi3
+        : machine?.state === "unreachable" ? t.ansi1
+        : t.muted;
       const login = machine?.state === "needs_login" ? `hc machine login ${m}` : null;
       // Elements are single-use: the rail and the wide head each build their own.
-      const icon = () => svg(`mods/workspace-chrome/${m ? "server" : "monitor"}.svg`).size(14).flex_none().text_color(t.muted);
-      const badge = () => div().absolute().right(-3).bottom(-2).size(6).rounded(3).border_1().border_color(t.chrome).bg(statusColor);
+      const icon = () => svg(`mods/workspace-chrome/${m ? "server" : "monitor"}.svg`).size(16).flex_none().text_color(statusColor);
+      const statusDot = () => div().id(`machine-status-dot-${m ?? "local"}`).size(6).rounded(3).flex_none().bg(statusColor);
       const warning = () => div().id(`machine-logout-${m}`).flex_none().text_color(t.blocked)
         .tooltip("Agents stop when you disconnect. Click for the fix.")
         .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
@@ -871,8 +876,9 @@ export default class Spaces extends View {
           .when(busy, el => el.spin(900)))
         .child(String(count));
       const row1 = h_flex().pr(SPACE_PADDING).gap(7).items_center()
-        .child(div().size(6).rounded(3).flex_none().bg(statusColor))
+        .when(dotPosition === "start", el => el.child(statusDot()))
         .child(icon())
+        .when(dotPosition === "after-icon", el => el.child(statusDot()))
         .child(div().flex_1().min_w_0().flex().items_center().gap(6)
           .child(div().min_w_0().truncate().child(m ?? "Local"))
           .when(m === null && this.cupHere && (enabled(SHOW_CUP) || this.cup !== "off"), el => el.child(cup()))
@@ -895,7 +901,8 @@ export default class Spaces extends View {
           .on_click((_e, cx) => { cx.stop_propagation(); run("space.new", { machine: m ?? "" }); })
           .child(svg("mods/workspace-chrome/plus.svg").size(12).flex_none())))
         .child(div().w(SPACE_STATUS_WIDTH).flex_none().flex().justify_center()
-          .child(svg(`mods/workspace-chrome/chevron-${folded ? "right" : "down"}.svg`).size(11).flex_none()));
+          .child(svg(`mods/workspace-chrome/chevron-${folded ? "right" : "down"}.svg`).size(11).flex_none()))
+        .when(dotPosition === "end", el => el.child(statusDot()));
       const from = machineNames.indexOf(this.machinePress?.m);
       const dragging = this.machinePress?.dragging;
       const drop = () => div().absolute().left(0).right(0).h(2).bg(t.accent)
@@ -932,7 +939,8 @@ export default class Spaces extends View {
           .hover(s => s.bg(t.hover))
           .when(dragging && this.machinePress.m === m, (el) => el.opacity(0.5))
           .when(dragging && this.machinePress.m !== m && this.machineOver?.m === m, (el) => el.child(drop()))
-          .child(div().relative().flex_none().child(icon()).when(Boolean(m), el => el.child(badge()))
+          .child(div().relative().flex_none().child(icon())
+            .when(showBadge && Boolean(m), el => el.child(statusDot().absolute().right(-3).bottom(-2).border_1().border_color(t.chrome)))
             .when(m === null && this.cup === "on", el => el.child(div().absolute().right(-3).bottom(-2).size(6).rounded(3).border_1().border_color(t.surface).bg(t.ansi3))))
           .when(machine?.keeps_running_after_logout === false, el => el.child(warning())))
         : drag(v_flex().id(`machine-${m ?? "local"}`).relative().flex_none().mt(4).mb(1).pl(collapsed ? 0 : 18).pr(collapsed ? 0 : SCROLL_GUTTER).pt(5).pb(6).bg(t.surface)
@@ -980,7 +988,7 @@ export default class Spaces extends View {
         .on_click((_e, cx) => this.toggleTerminals(id, cx))
         .when(statusAtStart(), el => el.child(statusCell(null, t)))
         .child(h_flex().w(SPACE_ICON_WIDTH).flex_none().items_center().justify_center()
-          .child(svg("mods/sidebar-spaces/unplug.svg").size(FOLDER_WIDTH).text_color(t.dim)))
+          .child(svg("mods/sidebar-spaces/unplug.svg").size(16).text_color(t.dim)))
         .child(open ? "Unattached" : `Unattached ${terms.length}`)
         .child(svg(`mods/workspace-chrome/chevron-${open ? "down" : "right"}.svg`).size(11).flex_none().text_color(t.muted)))
       .children(this.terminalRows(id, terms, t, shown));

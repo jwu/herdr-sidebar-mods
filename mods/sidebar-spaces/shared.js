@@ -20,6 +20,7 @@ export const narrow = () => sidebarPx() < 160;
 export const shown = () => window()?.visible !== false;
 
 export const STATUS_POSITION_KEY = "sidebar.statusPosition";
+export const MACHINE_STATUS_DOT = "sidebar.spaces.machineStatusDot";
 export const SHOW_USAGE = "sidebar.spaces.showUsage";
 export const SHOW_PORTS = "sidebar.spaces.showPorts";
 export const SHOW_CUP = "sidebar.spaces.showCup";

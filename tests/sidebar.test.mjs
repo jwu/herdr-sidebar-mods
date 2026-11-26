@@ -168,6 +168,47 @@ test("Sidebar settings applies the selected status position to both panels", () 
   assert.deepEqual(closed, ["settings-overlay"]);
 });
 
+test("Machine status dot is off by default and follows the selected header position", () => {
+  const key = "sidebar.spaces.machineStatusDot";
+  const values = new Map();
+  const shared = key => values.get(key);
+  const spaces = init("sidebar-spaces", { shared });
+  spaces.instance.machines = [{ name: "vps", state: "connected" }];
+  const settings = init("sidebar-agents", {
+    props: () => ({ sidebarSettings: true }),
+    shared,
+    setShared: (key, value) => values.set(key, value),
+  });
+  const menu = settings.instance.render(settings.context);
+  const option = value => byId(menu, `setting-${key}-${value}`);
+  assert.ok(uiState(option("off")).calls.some(([method]) => method === "font_semibold"));
+
+  const dotId = "machine-status-dot-vps";
+  const { ansi1, ansi2 } = spaces.herdr.theme();
+  const header = () => byId(spaces.instance.render(spaces.context), "machine-vps");
+  const row = () => uiState(header()).children[0];
+  assert.equal(byId(row(), dotId), undefined);
+  assert.ok(uiState(uiState(row()).children[0]).calls.some(([method, color]) => method === "text_color" && color === ansi2));
+
+  for (const [value, index] of [["start", 0], ["end", -1], ["after-icon", 1]]) {
+    uiState(option(value)).handlers.on_click();
+    const current = row();
+    const dot = byId(current, dotId);
+    assert.ok(dot);
+    assert.equal(uiState(current).children.at(index), dot);
+    assert.ok(uiState(dot).calls.some(([method, color]) => method === "bg" && color === ansi2));
+  }
+  spaces.instance.machines[0].state = "unreachable";
+  const unreachable = row();
+  assert.ok(uiState(uiState(unreachable).children[0]).calls.some(([method, color]) => method === "text_color" && color === ansi1));
+  assert.ok(uiState(byId(unreachable, dotId)).calls.some(([method, color]) => method === "bg" && color === ansi1));
+
+  spaces.herdr.layout = () => ({ id: "sidebar", size: { px: 76 } });
+  assert.ok(byId(header(), dotId));
+  uiState(option("off")).handlers.on_click();
+  assert.equal(byId(header(), dotId), undefined);
+});
+
 test("Agents shows a settings gear beside sort when the layout has no Spaces mod", () => {
   const overlays = [];
   const { instance, context } = init("sidebar-agents", {
@@ -186,7 +227,7 @@ test("Agents shows a settings gear beside sort when the layout has no Spaces mod
   assert.ok(uiState(controls).children.includes(sort));
   uiState(gear).handlers.on_click();
   assert.deepEqual(structuredClone(overlays), [
-    { mod: "sidebar-agents", kind: "dialog", width: 510, height: 823, props: { sidebarSettings: true } },
+    { mod: "sidebar-agents", kind: "dialog", width: 510, height: 857, props: { sidebarSettings: true } },
   ]);
 });
 
