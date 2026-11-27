@@ -311,7 +311,9 @@ test("Sidebar display preferences affect both lists and preserve individual fold
   assert.equal(byId(agentRoot, "sub-t2"), undefined);
   assert.ok(byId(agentRoot, "sp-local"));
   uiState(byId(spaceRoot, "terminals-space-local")).handlers.on_click({}, { ...spaces.context, stop_propagation() {} });
-  uiState(byId(agentRoot, "fold-t1")).handlers.on_click({}, { ...agents.context, stop_propagation() {} });
+  const childToggle = uiState(byId(agentRoot, "fold-t1"));
+  assert.ok(childToggle.calls.every(([method]) => method !== "hover"), "the child toggle keeps its colors on hover");
+  childToggle.handlers.on_click({}, { ...agents.context, stop_propagation() {} });
   assert.ok(byId(render(spaces), "task-t2"));
   assert.ok(byId(render(agents), "sub-t2"));
   spaces.instance.cup = "on";
@@ -475,6 +477,71 @@ test("Agents reuses trees within a render and rebuilds them when terminals chang
   assert.notEqual(next, first);
   assert.equal(next.length, 1);
   assert.equal(next[0].lines[0], "└");
+});
+
+test("Agents shows a solid yellow Done dot on roots with a working sub-agent", () => {
+  const parent = { address: "t1", status: "done", seq: 1 };
+  const child = { address: "t2", parent: "t1", state: "live", status: "working" };
+  const grandchild = { address: "t3", parent: "t2", state: "live", status: "working" };
+  const ended = { address: "t4", parent: "t1", state: "finished", status: "done" };
+  let width = 300;
+  let agents = [parent];
+  const { instance, context, herdr } = init("sidebar-agents", {
+    agents: () => agents,
+    terminals: () => [child, grandchild, ended],
+    layout: () => ({ id: "root", children: [{ id: "sidebar", size: { px: width } }] }),
+  });
+  const { ansi3, done } = herdr.theme();
+  const dot = (view, address) => {
+    const cell = uiState(byId(view, `ag-${address}`)).children.at(-1);
+    const calls = [...nodes(cell)].flatMap(n => uiState(n).calls);
+    return {
+      fill: calls.find(([method]) => method === "bg")?.[1],
+      outline: calls.find(([method]) => method === "border_color")?.[1],
+    };
+  };
+  const solidYellow = { fill: ansi3, outline: undefined };
+  const solidGreen = { fill: done, outline: undefined };
+  const render = () => instance.render(context);
+  const view = render();
+  assert.deepEqual(dot(view, parent.address), solidYellow);
+  const doneHeader = byId(view, "sec-3");
+  assert.ok(doneHeader);
+  uiState(doneHeader).handlers.on_click({}, context);
+  assert.equal(byId(render(), "ag-t1"), undefined, "folding Done hides the root row");
+
+  width = 100;
+  assert.deepEqual(dot(render(), parent.address), solidYellow, "the narrow sidebar shows the solid yellow dot");
+  child.status = "idle";
+  assert.deepEqual(dot(render(), parent.address), solidYellow, "an idle child and working grandchild still show yellow");
+  grandchild.status = "done";
+  assert.deepEqual(dot(render(), parent.address), solidGreen, "when the last descendant finishes, the dot turns solid green");
+  child.pinned = true;
+  child.status = "done";
+  grandchild.status = "working";
+  agents = [parent, child];
+  assert.deepEqual(dot(render(), child.address), solidGreen, "a nested agent gets the ordinary Done dot");
+
+  child.state = grandchild.state = "finished";
+  agents = [parent];
+  assert.deepEqual(dot(render(), parent.address), solidGreen, "a root needs at least one live sub-agent");
+});
+
+test("Agents shows a solid yellow Done dot when a remote root has finished and working children", () => {
+  const parent = { address: "vps/t1", status: "done", seq: 1 };
+  const children = [
+    { address: "vps/t2", parent: parent.address, state: "live", status: "done" },
+    { address: "vps/t3", parent: parent.address, state: "live", status: "working" },
+  ];
+  const { instance, context, herdr } = init("sidebar-agents", {
+    agents: () => [parent],
+    terminals: () => children,
+  });
+  const row = byId(instance.render(context), `ag-${parent.address}`);
+  const cell = uiState(row).children.at(-1);
+  const calls = [...nodes(cell)].flatMap(n => uiState(n).calls);
+  assert.ok(calls.some(([method, color]) => method === "bg" && color === herdr.theme().ansi3));
+  assert.ok(calls.every(([method]) => method !== "border_color"));
 });
 
 test("Agents shows a plain terminal as the parent of a reporting child agent", () => {

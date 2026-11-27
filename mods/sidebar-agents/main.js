@@ -484,7 +484,7 @@ export default class Agents extends View {
   // compact: a ! for blocked where a header already says "Needs you".
   status(t, a, compact = false) {
     if (a.status === "blocked" && !compact) return div().flex_none().px(6).h(18).rounded(5).bg(t.blocked + "26").text_size(10.5).font_semibold().text_color(t.blocked).flex().items_center().child("Needs you");
-    if (a.status === "done") return statusDot(t.done ?? t.dim);
+    if (a.status === "done") return statusDot(a.childrenWorking ? t.ansi3 : (t.done ?? t.dim));
     if (a.status === "unread") return statusDot(unreadColor(t));
     return mark(a.status, t) ?? statusDot(t.dim + "00");
   }
@@ -583,8 +583,8 @@ export default class Agents extends View {
     this.hold(list);
     // A kept sub-agent (one with a pane) is in agents() too: where a tree shows
     // it, it gets no row of its own, unless it's pinned.
-    const nested = new Set(collapsed ? [] : list.flatMap((a) => this.tree(a.address).map((s) => s.t.address)));
-    list = list.filter((a) => a.pinned || !nested.has(a.address));
+    const nested = new Set(list.flatMap((a) => this.tree(a.address).map((s) => s.t.address)));
+    if (!collapsed) list = list.filter((a) => a.pinned || !nested.has(a.address));
     const firstGit = !this.gitPlaces;
     const places = this.gitPlaces = this.places(list, ps, focus);
     this.adoptGit(new Set(places.map(([key]) => key)));
@@ -649,7 +649,6 @@ export default class Agents extends View {
         .text_size(11)
         .text_color(open ? t.muted : (tone(t, top) ?? t.muted))
         .cursor_default()
-        .hover((s) => s.bg(t.hover).text_color(t.foreground))
         .on_click((_e, cx) => toggleChildren(a.address, cx))
         .child(svg(`mods/workspace-chrome/chevron-${open ? "down" : "right"}.svg`).size(11).flex_none())
         .when(!open, el => el.child(String(subs.length)));
@@ -668,7 +667,12 @@ export default class Agents extends View {
     }));
     const label = (a) => labels.get(a.address);
 
-    const row = (a, i, subs = []) => {
+    const row = (a, i, subs) => {
+      const status = { status: a.status, childrenWorking: false };
+      if (a.status === "done" && !nested.has(a.address)) {
+        const children = collapsed ? this.tree(a.address) : subs;
+        status.childrenWorking = children.some(({ t }) => kidStatus(t, this.listed) === "working");
+      }
       const pic = icon(a.program, AGENT_ICON_WIDTH, t.foreground);
       const open = () => {
         if (a.pane) run("pane.focus", { pane: a.pane });
@@ -679,7 +683,7 @@ export default class Agents extends View {
       const machine = machineOf(a.address);
       if (collapsed) {
         const on = a.address === active;
-        const status = h_flex().w(14).flex_none().items_center().justify_center().child(this.status(t, a, true));
+        const cell = h_flex().w(14).flex_none().items_center().justify_center().child(this.status(t, status, true));
         return h_flex()
           .id(`ag-${a.address}`)
           .h(26)
@@ -693,9 +697,9 @@ export default class Agents extends View {
           .hover((s) => s.bg(t.hover))
           .on_click(open)
           .tooltip(label(a))
-          .when(leading, el => el.child(status))
+          .when(leading, el => el.child(cell))
           .child(div().flex_1().min_w(0).whitespace_nowrap().text_right().text_color(on ? t.foreground : t.muted).child(String(i + 1)))
-          .when(!leading, el => el.child(status));
+          .when(!leading, el => el.child(cell));
       }
       const when = this.since(a);
       const idle = a.status === "idle" && !a.focused;
@@ -776,7 +780,7 @@ export default class Agents extends View {
         .when(a.terminalParent, el => el.tooltip([cwd, a.title, showParentIds && a.address].filter(Boolean).join(" · ")))
         // A named pane hides its folder from the row; the tooltip keeps it.
         .when(Boolean(a.pane_name && !a.terminalParent && cwd), el => el.tooltip(cwd))
-        .when(leading, el => el.child(this.statusCell(t, a)))
+        .when(leading, el => el.child(this.statusCell(t, status)))
         .when(Boolean(pic), (el) => el.child(div().id(`agent-fold-${a.address}`).flex_none()
           .when(subs.length > 0, (el) => el.on_click((_e, cx) => toggleChildren(a.address, cx))).child(pic)))
         .when(!pic, (el) => el.child(div().w(AGENT_ICON_WIDTH).flex_none()))
@@ -791,7 +795,7 @@ export default class Agents extends View {
           .child(h_flex().h(16).w_full().min_w(0).gap(4).items_center()
             .child(svg(`mods/workspace-chrome/${machine ? "server" : "monitor"}.svg`).size(12).flex_none().text_color(t.dim))
             .when(Boolean(line), (el) => el.child(line))))
-        .when(!leading, el => el.child(this.statusCell(t, a)));
+        .when(!leading, el => el.child(this.statusCell(t, status)));
     };
 
     // Groups in list order: spaces (grouped) or priority sections. Agents of a
